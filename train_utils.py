@@ -109,7 +109,7 @@ def prompting(
 ):
     binary_task = False if s_dataset.num_gclass > 2 else True
     training_config["binary_task"] = binary_task
-    training_method = "supervised" if prompt_method in ["all_in_one_original", "all_in_one_modified", "gpf_plus"] else prompt_method
+    training_method = "supervised" if prompt_method in ["all_in_one_original", "gpf_plus"] else prompt_method
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     main_model = PretrainedModel(**pretrained_config)
     discr_config = {
@@ -147,14 +147,8 @@ def prompting(
     
         if prompt_method == "all_in_one_original":
             pmodel = AllInOneOrginal(**prompt_config)
-        elif prompt_method == "all_in_one_modified":
-            pmodel = AllInOneModified(**prompt_config)
         elif prompt_method == "gpf_plus":
             pmodel = GPFPlus(**prompt_config)
-        elif prompt_method == "contrastive":
-            pmodel = BasePrompt(**prompt_config)
-        elif prompt_method == "pseudo_labeling":
-            pmodel = BasePrompt(**prompt_config)
         elif prompt_method == "fix_match":
             pmodel = BasePrompt(**prompt_config)
         elif prompt_method == "flex_match":

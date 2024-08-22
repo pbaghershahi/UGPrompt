@@ -56,4 +56,4 @@ light_aug_mode: mask
 num_tokens: 10
 t_split:
 - 0.30
-- 0.65
+- 0.60

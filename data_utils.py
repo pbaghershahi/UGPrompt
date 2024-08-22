@@ -549,9 +549,6 @@ class GenDataset(object):
         select_mode = "soft"
     ):
 
-        """ Currently supported datasets:
-            - Cora_
-        """
         dataset = Planetoid(
             root = f'data/{ds_name}',
             name = ds_name
@@ -634,10 +631,6 @@ class GenDataset(object):
         select_mode = "soft"
     ):
         
-        """ Currently supported datasets: 
-            - ENZYMES
-            - PROTEINS_full
-        """
         dataset = TUDataset(
             root = store_to_path,
             name = ds_name,

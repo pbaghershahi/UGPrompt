@@ -84,7 +84,7 @@ def main(args) -> None:
                 seed = arg_seeds[i],
                 select_mode = args.noise_select_mode
             )
-        elif args.s_dataset in ["ENZYMES", "PROTEINS", "Mutagenicity", "AIDS", "NCI1", "DHFR", "COX2"]:
+        elif args.s_dataset in ["ENZYMES", "PROTEINS", "DHFR"]:
             s_dataset, t_dataset = gen_ds.get_graph_dataset(
                 args.s_dataset,
                 shift_type = args.shift_type,
@@ -104,32 +104,8 @@ def main(args) -> None:
                 seed = arg_seeds[i],
                 select_mode = args.noise_select_mode
             )
-        elif args.s_dataset in ["Letter-high", "Letter-low", "Letter-med"]:
-            s_dataset, t_dataset = gen_ds.get_pyggda_dataset(
-                args.s_dataset,
-                t_ds_name,
-                store_to_path = "./data/TUDataset",
-                s_split = args.s_split,
-                t_split = args.t_split,
-                batch_size = args.batch_size,
-                norm_mode = "normal",
-                node_attributes = True,
-                label_reduction = args.label_reduction,
-                seed = arg_seeds[i]
-            )
-        elif args.s_dataset in ["digg", "oag", "twitter", "weibo"]:
-            s_dataset, t_dataset = gen_ds.get_gda_dataset(
-                ds_dir = "./data/ego_network/",
-                s_ds_name = args.s_dataset,
-                t_ds_name = t_ds_name,
-                s_split = args.s_split,
-                t_split = args.t_split,
-                batch_size = args.batch_size,
-                get_s_dataset = True,
-                get_t_dataset = True,
-                label_reduction = args.label_reduction,
-                seed = arg_seeds[i]
-            )
+        else:
+            raise Exception("Dataset is not supported")
 
         model_name = "GCN"
         model_config = dict(
@@ -194,17 +170,6 @@ def main(args) -> None:
                 n_epochs = args.n_epochs,
                 r_reg = args.r_reg
             )
-        elif args.prompt_method == "all_in_one_modified":
-            prompt_config = dict(
-                token_dim = t_dataset.n_feats,
-                token_num = num_tokens,
-                cross_prune = args.cross_prune,
-                inner_prune = args.inner_prune,
-            )
-            training_config = dict(
-                n_epochs = args.n_epochs,
-                r_reg = args.r_reg
-            )
         elif args.prompt_method == "gpf_plus":
             prompt_config = dict(
                 token_dim = t_dataset.n_feats,
@@ -213,48 +178,6 @@ def main(args) -> None:
             training_config = dict(
                 n_epochs = args.n_epochs,
                 r_reg = args.r_reg
-            )
-        elif args.prompt_method == "contrastive":
-            prompt_config = dict(
-                emb_dim = t_dataset.n_feats,
-                h_dim = args.h_dim,
-                output_dim = t_dataset.n_feats,
-                prompt_fn = args.prompt_fn,
-                token_num = num_tokens
-            )
-            training_config = dict(
-                aug_type = args.aug_type,
-                pos_aug_mode = args.pos_aug_mode,
-                neg_aug_mode = args.neg_aug_mode,
-                p_raug = args.p_raug,
-                n_raug = args.n_raug,
-                add_link_loss = args.add_link_loss,
-                n_epochs = args.n_epochs,
-                r_reg = args.r_reg
-            )
-        elif args.prompt_method == "pseudo_labeling":
-            prompt_config = dict(
-                emb_dim = t_dataset.n_feats,
-                h_dim = args.h_dim,
-                output_dim = t_dataset.n_feats,
-                prompt_fn = args.prompt_fn,
-                token_num = num_tokens,
-                cross_prune = args.cross_prune,
-                inner_prune = args.inner_prune,
-            )
-            training_config = dict(
-                aug_type = args.aug_type,
-                pos_aug_mode = args.pos_aug_mode,
-                p_raug = args.p_raug,
-                n_epochs = args.n_epochs,
-                r_reg = args.r_reg,
-                soft_label = args.soft_label,
-                clutering_iters = args.clutering_iters,
-                iterative_clustering = args.iterative_clustering,
-                entropy_div_ratio = args.entropy_div_ratio,
-                w_entropy_loss = args.w_entropy_loss,
-                w_softmax_loss = args.w_softmax_loss,
-                w_domain_loss = args.w_domain_loss,
             )
         elif args.prompt_method in ["fix_match", "flex_match"]:
             prompt_config = dict(
