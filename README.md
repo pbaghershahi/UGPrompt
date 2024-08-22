@@ -18,7 +18,7 @@ To train a base GNN model and train a prompting method run the main.py file. For
 python main.py --pretrain --config-from-file ./config/pubmed.yaml --total-iters 10 --num-runs 5
 ```
 
-This will run 50 experiments with the setting and report the average performance; that is 10 different initialization of datasets (```--total-iters 10```) and 5 rounds of initializing the prompting function parameters (```--num-runs 5```).
+This will run 50 experiments with the setting and report the average performance; that is 10 different initialization of the dataset (```--total-iters 10```) and 5 rounds of initializing the prompting function parameters (```--num-runs 5```).
 
 The settings for all the datasets are provided in the ```config``` directory with the name of the datasets. To change the datasets change the path for ```--config-from-file```.
 
@@ -33,7 +33,7 @@ CiteSeer | ```./config/citeseer.yaml``` |
 PubMed | ```./config/pubmed.yaml``` |
 
 ## Supported Prompting Methods
-Dataset | path |
+Methods | method name |
 :--- | :---: |
 UGPrompt | ```fix_match```/```flex_match``` |
 GPF-Plus | ```gpf_plus``` |
