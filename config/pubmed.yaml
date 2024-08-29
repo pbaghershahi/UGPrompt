@@ -51,7 +51,7 @@ w_softmax_loss: 0.0
 weight_decay: 0.0
 label_reduction: 0.0
 cut_off: 0.5
-light_aug_prob: 0.0
+light_aug_prob: 0.1
 light_aug_mode: mask
 num_tokens: 50
 t_split:
