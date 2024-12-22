@@ -6,14 +6,23 @@ from data_utils import *
 from model import *
 from scipy.spatial.distance import cdist
 from scipy.special import softmax
+from functools import partial
 
 
 class PromptTrainer():
     def __init__(self, training_method, training_config, device, *args, **kwargs) -> None:
         super(PromptTrainer, self).__init__()
         self.training_config = training_config
-        if training_method == "supervised":
+        self.training_method = training_method
+        if training_method in ["gpf_plus", "all_in_one_original"]:
             self.train_func = self.supervised
+            self.loss_func = partial(F.cross_entropy, reduction='mean')
+        elif training_method == "graph_prompt":
+            self.train_func = self.supervised
+            self.loss_func = partial(GraphPrompt.loss, num_classes=self.training_config["num_classes"], temperature=1.0)
+        elif training_method == "gppt":
+            self.train_func = self.gppt
+            self.loss_func = partial(F.cross_entropy, reduction='mean')
         elif training_method == "fix_match":
             self.train_func = self.consistency
             self.get_mask= self.fix_match_mask
@@ -25,6 +34,16 @@ class PromptTrainer():
         self.device = device
 
     def consistency(self, pretrained_model, prompt_model, batch, idxs, t_dataset, **kwargs):
+        n_sampels = batch.y.size(0)
+        perm = torch.randperm(n_sampels)
+        if kwargs["n_shot_ratio"] > 0:
+            n_shots = max(1, int(n_sampels * kwargs["n_shot_ratio"]))
+        else:
+            n_shots = 0
+        n_shots_idxs = perm[:n_shots].to(self.device)
+        labels = batch.y.to(self.device)
+
+        batch_idxs = batch.batch
         batch = batch.to_data_list()
         idxs = idxs.to(self.device)
         pos_batch = [
@@ -59,9 +78,14 @@ class PromptTrainer():
         pos_out = F.softmax(pos_out, dim=1)
         # ipdb.set_trace()
         thresh_mask = self.get_mask(pos_out, idxs_ulb=idxs, t_dataset=t_dataset)
-        pos_out = pos_out[thresh_mask, :]
-        prompt_out = prompt_out[thresh_mask, :]
-        pseudo_labels = torch.zeros_like(pos_out).scatter_(1, pos_out.argmax(dim=1)[:, None], 1.)
+        masked_samples = torch.cat((thresh_mask, n_shots_idxs))
+        masked_samples, inv_mask = masked_samples.unique(return_inverse=True)
+        pos_out = pos_out[masked_samples, :]
+        prompt_out = prompt_out[masked_samples, :]
+        pseudo_labels = pos_out.argmax(dim=1)
+        if n_shots > 0:
+            pseudo_labels[inv_mask[-n_shots:]] = labels[n_shots_idxs]
+        pseudo_labels = torch.zeros_like(pos_out).scatter_(1, pseudo_labels[:, None], 1.)
         ce_loss, ent_loss, softmax_loss, domain_loss = 0.0, 0.0, 0.0, 0.0
         if self.training_config["binary_task"]:
             ce_loss = F.binary_cross_entropy_with_logits(prompt_out, pseudo_labels)
@@ -88,7 +112,6 @@ class PromptTrainer():
     def flex_match_mask(self, output, idxs_ulb, t_dataset):
         max_probs, max_idxs = output.max(dim=-1)
         mask = (max_probs >= self.cut_off * self.classwise_beta[max_idxs]).int()
-        # print(self.classwise_beta[max_idxs])
         select = (max_probs >= self.cut_off).int()
         if select.sum() > 0:
             t_dataset.update_preds(idxs_ulb[select == 1].cpu(), max_idxs[select == 1].cpu())
@@ -105,12 +128,21 @@ class PromptTrainer():
 
     def supervised(self, pretrained_model, prompt_model, batch, **kwargs):
         labels = batch.y.to(self.device)
-        prompt_batch = prompt_model(batch, self.device)
-        prompt_out, _ = pretrained_model(
-            prompt_batch,
-            decoder = True,
-            )
-        loss = F.cross_entropy(prompt_out, labels, reduction="mean")
+        if prompt_model.prefix_prompt:
+            batch = prompt_model(batch, device=self.device)
+            logits, embeds = pretrained_model(
+                batch,
+                decoder = True,
+                device = self.device
+                )
+        else:
+            _, embeds = pretrained_model(
+                batch,
+                decoder = False,
+                device = self.device
+                )
+            logits = prompt_model(embeds, batch.batch, device=self.device)
+        loss = self.loss_func(input=logits, target=labels)
         if self.training_config["r_reg"] > 0.0 and not prompt_model.trans_x:
             loss += self.training_config["r_reg"] * prompt_model.token_embeds.pow(2).mean()
         return loss
@@ -133,13 +165,29 @@ class PromptTrainer():
         prompt_loss = F.binary_cross_entropy_with_logits(prompt_out, real_labels)
         return prompt_loss
         
-    def train(self, t_dataset, pretrained_model, prompt_model, optimizer, logger, **kwargs) -> None:
-        for i, (batch, idxs) in enumerate(t_dataset.train_loader):
+    def gppt(self, pretrained_model, prompt_model, t_dataset, **kwargs):
+        batch = Batch.from_data_list([g[0] for g in t_dataset.train_loader]).to(self.device)
+        _, embeds = pretrained_model(
+            batch,
+            decoder = False,
+            device = self.device
+        )
+        logits = prompt_model(embeds, batch)
+        return self.loss_func(input=logits, target=batch.y) + prompt_model.get_reg_loss()    
+
+    def train(self, t_dataset, pretrained_model, prompt_model, optimizer, logger, **kwargs):
+        if self.training_method == "gppt":
             optimizer.zero_grad()
-            loss = self.train_func(pretrained_model, prompt_model, batch, idxs=idxs, t_dataset=t_dataset, **kwargs)
+            loss = self.train_func(pretrained_model, prompt_model, t_dataset=t_dataset)
             loss.backward()
             optimizer.step()
-            total_grad_norm = 0
-            # if i % max(1, int((t_dataset.n_train//batch.y.size(0))*0.5)) == 0:
-            #     logger.info(f"Train batch: {i}/{np.ceil(t_dataset.n_train//batch.y.size(0))}, Train Loss: {loss.data}")
+            prompt_model.update_centers(prompt_model.mid_x)
+        else:
+            for i, (batch, idxs) in enumerate(t_dataset.train_loader):
+                optimizer.zero_grad()
+                loss = self.train_func(pretrained_model, prompt_model, batch, idxs=idxs, t_dataset=t_dataset, **kwargs)
+                loss.backward()
+                optimizer.step()
+            if self.training_method == "graph_prompt":
+                prompt_model.update_centers(pretrained_model, t_dataset, self.device)
         return loss

@@ -288,14 +288,19 @@ def get_induced_graphs(dataset, n_hops, smallest_size=None, largest_size=None, m
 
 
 def get_nids(num_nodes, all_nids, ego_idxs):
-    nids = [all_nids[idx.item()] for idx in ego_idxs]
+    nids = [all_nids[idx] for idx in ego_idxs]
     all_idxs = torch.cat(nids).unique()
     mask = torch.ones((num_nodes,), dtype=int)
     mask[all_idxs] = 0
     diffs = mask.cumsum(dim=0)
+    rev_ego_idxs = []
+    new_nids = []
     for i, nid in enumerate(nids):
+        rev_ego_idxs.append((nid == ego_idxs[i]).nonzero().view(-1))
         nids[i] = torch.as_tensor([j-diffs[j] for j in nid])
-    return nids, all_idxs
+    rev_ego_idxs = torch.cat(rev_ego_idxs, dim=0)
+    assert rev_ego_idxs.size(0) == len(nids)
+    return nids, all_idxs, rev_ego_idxs
 
 
 class InducedDataset(Dataset):
@@ -306,6 +311,8 @@ class InducedDataset(Dataset):
         self.all_edges = edge_idxs
         self.y = y
         self.preds = torch.ones_like(self.y).long() * -1
+        if "rev_ego_idxs" in kwargs:
+            self.rev_ego_idxs = kwargs["rev_ego_idxs"]
 
     def _reset_preds(self,):
         self.preds = torch.ones_like(self.preds).long() * -1
@@ -317,12 +324,13 @@ class InducedDataset(Dataset):
         return self.preds
         
     def _copy_idxs(self, ego_idxs):
-        nids, all_idxs = get_nids(self.x.size(0), self.all_nids, ego_idxs)
+        nids, all_idxs, rev_ego_idxs = get_nids(self.x.size(0), self.all_nids, ego_idxs.tolist())
         induced_ds = InducedDataset(
             nids,
             [self.all_edges[idx.item()] for idx in ego_idxs],
             self.x[all_idxs],
-            self.y[ego_idxs]
+            self.y[ego_idxs],
+            rev_ego_idxs = rev_ego_idxs
         )
         return induced_ds
 
@@ -333,7 +341,9 @@ class InducedDataset(Dataset):
         x = self.x[self.all_nids[idx]]
         y = self.y[idx]
         edges = self.all_edges[idx]
-        return Data(x=x, edge_index=edges, y=y), idx
+        graph = Data(x=x, edge_index=edges, y=y)
+        graph.ego_idx = self.rev_ego_idxs[idx]
+        return graph, idx
 
 
 class NodeToGraphDataset(GDataset):
@@ -408,6 +418,7 @@ class NodeToGraphDataset(GDataset):
         self.train_ds = self._data._copy_idxs(self.train_idxs)
         self.valid_ds = self._data._copy_idxs(self.valid_idxs)
         self.test_ds = self._data._copy_idxs(self.test_idxs)
+
         if normalize_mode is not None:
             self.normalize_feats_(normalize_mode)
         self.init_loaders_(batch_size, loader_collate)
@@ -565,7 +576,7 @@ class GenDataset(object):
 
         src_nids, src_edges, src_mapping = merge_induced_graphs(src_ego_idxs, all_nids, src_nids, src_edges)
         tgt_nids, tgt_edges, tgt_mapping = merge_induced_graphs(tgt_ego_idxs, all_nids, tgt_nids, tgt_edges)
-        
+
         def get_all_idxs(ego_idxs, aux_mapping):
             aux_mapping = torch.as_tensor(list(aux_mapping.items()))
             aux_mapping = aux_mapping[aux_mapping[:, 1].sort().indices, :]

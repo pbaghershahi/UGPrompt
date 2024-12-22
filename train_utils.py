@@ -11,11 +11,11 @@ from utils import *
 from data_utils import *
 from prompt_func import *
 from model import *
+import ipdb
 
 
 def pretrain_model(
     s_dataset,
-    model_name, 
     model_config,
     optimizer_config,
     training_config,
@@ -28,8 +28,7 @@ def pretrain_model(
     tunning = False,
 ):
     binary_task = False if s_dataset.num_gclass > 2 else True
-    if model_name == "GCN":
-        model = PretrainedModel(**model_config)
+    model = PretrainedModel(**model_config)
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model.to(device)
     
@@ -80,7 +79,7 @@ def pretrain_model(
     if save_model:
         os.makedirs(model_dir, exist_ok=True)
         exec_name = datetime.today().strftime('%Y-%m-%d-%H-%M-%S')
-        model_path = os.path.join(model_dir, f"{model_name}_Pretrained_{exec_name}.pth")
+        model_path = os.path.join(model_dir, f"{model_config['gnn_type']}_Pretrained_{exec_name}.pth")
         torch.save(
             {
                 'epoch': epoch,
@@ -109,7 +108,6 @@ def prompting(
 ):
     binary_task = False if s_dataset.num_gclass > 2 else True
     training_config["binary_task"] = binary_task
-    training_method = "supervised" if prompt_method in ["all_in_one_original", "gpf_plus"] else prompt_method
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     main_model = PretrainedModel(**pretrained_config)
     discr_config = {
@@ -119,9 +117,11 @@ def prompting(
     }
     main_model.to(device)
     load_model(main_model, read_checkpoint=True, pretrained_path=pretrained_path)
-    for param in main_model.parameters():
+    for name, param in main_model.named_parameters():
+        if name.startswith("linear_decoder") and training_config["tune_decoder"]:
+            continue
         param.requires_grad = False
-    main_model.eval()
+        
     results = dict()
     # ipdb.set_trace()
     if s_dataset is not None:
@@ -149,6 +149,10 @@ def prompting(
             pmodel = AllInOneOrginal(**prompt_config)
         elif prompt_method == "gpf_plus":
             pmodel = GPFPlus(**prompt_config)
+        elif prompt_method == "graph_prompt":
+            pmodel = GraphPrompt(**prompt_config)
+        elif prompt_method == "gppt":
+            pmodel = GPPT(**prompt_config)
         elif prompt_method == "fix_match":
             pmodel = BasePrompt(**prompt_config)
         elif prompt_method == "flex_match":
@@ -157,23 +161,31 @@ def prompting(
 
         discriminator = Discriminator(**discr_config)
         discriminator.to(device)
-        
-        optimizer = Adam(pmodel.parameters(), lr = optimizer_config["lr"], weight_decay = optimizer_config["weight_decay"])
+
+        if not training_config["tune_decoder"]:
+            main_model.eval()
+
+        opt_params = list(pmodel.parameters()) + list(main_model.parameters()) if training_config["tune_decoder"] else list(pmodel.parameters())
+        optimizer = Adam(opt_params, lr = optimizer_config["lr"], weight_decay = optimizer_config["weight_decay"])
         optimizer_d = Adam(discriminator.parameters(), lr = optimizer_config["lr"], weight_decay = optimizer_config["weight_decay"])
         scheduler = StepLR(optimizer, step_size = optimizer_config["scheduler_step_size"], gamma = optimizer_config["scheduler_gamma"])
-        Trainer = PromptTrainer(training_method, training_config, device)
+        Trainer = PromptTrainer(prompt_method, training_config, device)
     
         valid_average_acc = []
         valid_average_f1 = []
         n_epochs = training_config["n_epochs"]
         for epoch in range(n_epochs):
             pmodel.train()
-            main_model.eval()
+            if training_config["tune_decoder"]:
+                main_model.train()
+            else:
+                main_model.eval()
             loss = Trainer.train(
                 t_dataset, main_model, pmodel, optimizer, logger, 
-                discriminator = discriminator, optimizer_d = optimizer_d
+                discriminator = discriminator, optimizer_d = optimizer_d,
+                n_shot_ratio = training_config["n_shot_ratio"]
             )
-            scheduler.step()
+            scheduler.step()        
             optimizer.zero_grad()
             
             if epoch % eval_step == 0 or epoch >= n_epochs - 6:
@@ -184,6 +196,7 @@ def prompting(
                 if epoch >= n_epochs - 6:
                     valid_average_acc.append(valid_acc)
                     valid_average_f1.append(valid_f1)
+
         n_evali_valid = len(valid_average_f1)
         valid_average_acc = np.array(valid_average_acc).mean()
         valid_average_f1 = np.array(valid_average_f1).mean()

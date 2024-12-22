@@ -107,7 +107,6 @@ def main(args) -> None:
         else:
             raise Exception("Dataset is not supported")
 
-        model_name = "GCN"
         model_config = dict(
             gnn_type = args.gnn_type,
             in_channels = s_dataset.n_feats,
@@ -131,10 +130,9 @@ def main(args) -> None:
             logger.info(f"Setting for pretraining: Model: {model_config} -- Optimizer: {optimizer_config} -- Training: {training_config}")
 
         if len(args.pretrained_path) == 0:
-            logger.info(f"Pretraining {model_name} on {args.s_dataset} started for {args.gnn_n_epochs} epochs")
+            logger.info(f"Pretraining {model_config['gnn_type']} on {args.s_dataset} started for {args.gnn_n_epochs} epochs")
             _, p_path = pretrain_model(
                 s_dataset,
-                model_name,
                 model_config,
                 optimizer_config,
                 training_config,
@@ -159,38 +157,15 @@ def main(args) -> None:
             weight_decay = args.weight_decay
         )
         # ipdb.set_trace()
-        if args.prompt_method == "all_in_one_original":
-            prompt_config = dict(
-                token_dim = t_dataset.n_feats,
-                token_num = num_tokens,
-                cross_prune = args.cross_prune,
-                inner_prune = args.inner_prune,
-            )
+
+        if args.prompt_method in ["all_in_one_original", "gpf_plus", "graph_prompt", "gppt"]:
             training_config = dict(
                 n_epochs = args.n_epochs,
-                r_reg = args.r_reg
-            )
-        elif args.prompt_method == "gpf_plus":
-            prompt_config = dict(
-                token_dim = t_dataset.n_feats,
-                token_num = num_tokens,
-            )
-            training_config = dict(
-                n_epochs = args.n_epochs,
-                r_reg = args.r_reg
+                r_reg = args.r_reg,
+                tune_decoder = args.tune_decoder,
+                n_shot_ratio = args.n_shot_ratio
             )
         elif args.prompt_method in ["fix_match", "flex_match"]:
-            prompt_config = dict(
-                emb_dim = t_dataset.n_feats,
-                h_dim = args.h_dim,
-                output_dim = t_dataset.n_feats,
-                prompt_fn = args.prompt_fn,
-                token_num = num_tokens,
-                cross_prune = args.cross_prune,
-                inner_prune = args.inner_prune,
-                attn_with_param = args.attn_with_param,
-                attn_dropout = args.dropout
-            )
             training_config = dict(
                 aug_type = args.aug_type,
                 pos_aug_mode = args.pos_aug_mode,
@@ -206,9 +181,48 @@ def main(args) -> None:
                 w_domain_loss = args.w_domain_loss,
                 light_aug_prob = args.light_aug_prob,
                 light_aug_mode = args.light_aug_mode,
+                tune_decoder = args.tune_decoder,
+                n_shot_ratio = args.n_shot_ratio
             )
         else:
-            raise Exception("The chosen method is not valid!")
+            raise NotImplementedError
+            
+        if args.prompt_method == "all_in_one_original":
+            prompt_config = dict(
+                token_dim = t_dataset.n_feats,
+                token_num = num_tokens,
+                cross_prune = args.cross_prune,
+                inner_prune = args.inner_prune,
+            )
+        elif args.prompt_method == "gpf_plus":
+            prompt_config = dict(
+                token_dim = t_dataset.n_feats,
+                token_num = num_tokens,
+            )
+        elif args.prompt_method == "graph_prompt":
+            prompt_config = dict(
+                token_dim = args.gnn_h_dim,
+            )
+        elif args.prompt_method == "gppt":
+            prompt_config = dict(
+                in_channels = args.gnn_h_dim,
+                out_channels = s_dataset.num_gclass,
+                num_centers = 5
+            )
+        elif args.prompt_method in ["fix_match", "flex_match"]:
+            prompt_config = dict(
+                emb_dim = t_dataset.n_feats,
+                h_dim = args.h_dim,
+                output_dim = t_dataset.n_feats,
+                prompt_fn = args.prompt_fn,
+                token_num = num_tokens,
+                cross_prune = args.cross_prune,
+                inner_prune = args.inner_prune,
+                attn_with_param = args.attn_with_param,
+                attn_dropout = args.dropout
+            )
+        else:
+            raise NotImplementedError
 
         training_config.update(num_classes = t_dataset.num_gclass, cut_off = args.cut_off)
         if i % 5 == 0:
@@ -316,5 +330,7 @@ if __name__ == '__main__':
     parser.add_argument("--config-from-file", type=str, default="", help="Config file to read from")
     parser.add_argument("--config-to-file", type=str, default="", help="Config file to save to")
     parser.add_argument("--label-reduction", type=float, help="Percentage of label reduction")
+    parser.add_argument("--tune-decoder", action='store_true', help="Percentage of label reduction")
+    parser.add_argument("--n-shot-ratio", type=float, help="K shot ratio for few-shot learning")
     args = parser.parse_args()
     main(args)

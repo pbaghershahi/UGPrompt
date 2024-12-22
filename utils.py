@@ -11,6 +11,73 @@ from torchmetrics.classification import BinaryF1Score, MulticlassF1Score
 from sklearn.preprocessing import StandardScaler
 
 
+def test(model, dataset, device, binary_task, mode, pmodel = None, validation = True):
+    with torch.no_grad():
+        model.eval()
+        f1 = BinaryF1Score() if binary_task else MulticlassF1Score(num_classes=dataset.num_gclass, average="macro")
+        test_loss, correct = 0, 0
+        labels = []
+        preds = []
+        if validation:
+            data_loader = dataset.valid_loader
+            n_samples = dataset.n_valid
+        else:
+            data_loader = dataset.test_loader
+            n_samples = dataset.n_test
+        for i, (batch, idxs) in enumerate(data_loader):
+            batch = batch.to(device)
+            temp_labels = batch.y.to(device)
+            if mode == "prompt":
+                pmodel.eval()
+                if pmodel.name in ["all_in_one", "gpf_plus", "ugprompt"]:
+                    batch = pmodel(batch, device=device)
+                    test_out, _ = model(
+                        batch,
+                        decoder = True,
+                        device = device
+                        )
+                    test_loss += F.cross_entropy(test_out, temp_labels, reduction="sum")
+                    test_out = F.softmax(test_out, dim=1)
+                elif pmodel.name == "graph_prompt":
+                    _, test_embeds = model(
+                        batch,
+                        decoder = False,
+                        device = device
+                        )
+                    test_out = pmodel(test_embeds, batch.batch, device=device)
+                    test_loss += pmodel.loss(test_out, temp_labels, dataset.num_gclass)
+                    centers = pmodel.get_centers()
+                    test_out = F.cosine_similarity(test_out[:, None, :], centers[None, :, :], dim=-1)
+                elif pmodel.name == "gppt":
+                    _, embeds = model(
+                        batch,
+                        decoder = False,
+                        device = device
+                    )
+                    test_out = pmodel(embeds, batch)
+                    test_loss += F.cross_entropy(input=test_out, target=batch.y)
+                    test_out = F.softmax(test_out, dim=1)
+                else:
+                    raise NotImplementedError("This prompting method is not supported!")
+            else:
+                test_out, _ = model(
+                    batch,
+                    decoder = True,
+                    device = device
+                    )
+                test_loss += F.cross_entropy(test_out, temp_labels, reduction="sum")
+                test_out = F.softmax(test_out, dim=1)
+            labels.append(temp_labels)
+            preds.append(test_out.argmax(dim=1))
+            batch, temp_labels, test_out = 0, 0, 0
+        # ipdb.set_trace()
+        labels = torch.cat(labels)
+        preds = torch.cat(preds)
+        test_loss /= n_samples
+        test_acc = int((labels == preds).sum()) / n_samples
+        test_f1 = f1(preds.detach().cpu(), labels.detach().cpu())
+    return test_loss, test_acc, test_f1.item()
+
 def copy_files(file_paths, dest_dir):
     if isinstance(file_paths, str):
         file_paths = file_paths.split(" ")
@@ -239,43 +306,6 @@ def aug_graph(org_graph, aug_prob, aug_type="link", mode="drop"):
             perm = torch.randperm(x.size(0))[:n_changes]
             x[perm] = .0
     return org_graph
-
-def test(model, dataset, device, binary_task, mode, pmodel = None, validation = True):
-    with torch.no_grad():
-        model.eval()
-        f1 = BinaryF1Score() if binary_task else MulticlassF1Score(num_classes=dataset.num_gclass, average="macro")
-        test_loss, correct = 0, 0
-        labels = []
-        preds = []
-        if validation:
-            data_loader = dataset.valid_loader
-            n_samples = dataset.n_valid
-        else:
-            data_loader = dataset.test_loader
-            n_samples = dataset.n_test
-        for i, (batch, idxs) in enumerate(data_loader):
-            # print("Test batch:", "@"*25, f"{i}/{len(dataset.test_loader)}", "@"*25, end='\r')
-            temp_labels = batch.y.to(device)
-            if mode == "prompt":
-                pmodel.eval()
-                batch = pmodel(batch, device)
-            test_out, _ = model(
-                batch,
-                decoder = True,
-                device = device
-                )
-            test_loss += F.cross_entropy(test_out, temp_labels, reduction="sum")
-            test_out = F.softmax(test_out, dim=1)
-            labels.append(temp_labels)
-            preds.append(test_out.argmax(dim=1))
-            batch, temp_labels, test_out = 0, 0, 0
-        # ipdb.set_trace()
-        labels = torch.cat(labels)
-        preds = torch.cat(preds)
-        test_loss /= n_samples
-        test_acc = int((labels == preds).sum()) / n_samples
-        test_f1 = f1(preds.detach().cpu(), labels.detach().cpu())
-    return test_loss, test_acc, test_f1.item()
 
 def get_subgraph(graph, node_indices):
     node_indices = np.sort(node_indices)

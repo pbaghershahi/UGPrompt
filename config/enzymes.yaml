@@ -54,6 +54,7 @@ cut_off: 0.1
 light_aug_prob: 0.1
 light_aug_mode: mask
 num_tokens: -1
+n_shot_ratio: 0.0
 t_split:
 - 0.60
 - 0.30

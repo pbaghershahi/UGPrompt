@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 import matplotlib.pyplot as plt
+from sklearn.cluster import KMeans
 from torch_geometric.data import Data, Batch
 from torch_geometric.nn import GCNConv, GINConv, SAGEConv, GATConv, GCN, global_mean_pool
 from typing import List
@@ -82,9 +83,6 @@ class PretrainedModel(nn.Module):
             graph_batch = Batch.from_data_list(graph_batch)
         if device is not None:
             graph_batch = graph_batch.to(device)
-        if not decoder:
-            scores = self.decoder(graph_batch)
-            return scores, "embeds"
         x = graph_batch.x
         for i, layer in enumerate(self.gnn_layers):
             x = layer(x, graph_batch.edge_index)
@@ -92,6 +90,8 @@ class PretrainedModel(nn.Module):
             x = F.relu(x)
             if i < len(self.gnn_layers) - 1:
                 x = F.dropout(x, p=self.dropout, training=self.training)
+        if not decoder:
+            return "scores", x
         if not self.with_head:
             x = F.dropout(x, p=self.dropout, training=self.training)
             x = self.gnn_decoder(x, graph_batch.edge_index)
@@ -109,15 +109,16 @@ class BasePrompt(nn.Module):
             emb_dim,
             h_dim,
             output_dim,
-            prompt_fn = "add_tokens",
+            prompt_fn = "gpf_plus",
             token_num = 30,
             cross_prune=0.1, 
             inner_prune=0.3,
             attn_dropout=0.3,
             input_dropout=0.3,
-            attn_with_param=False
+            attn_with_param=False,
         ) -> None:
         super(BasePrompt, self).__init__()
+        self.prefix_prompt = True
         self.head = nn.Linear(h_dim, output_dim)
         self.emb_dim = emb_dim
         self.prompt_fn = prompt_fn
@@ -142,6 +143,10 @@ class BasePrompt(nn.Module):
             self.prompt = self.tucker
         else:
             raise Exception("The prompting function is not implemented")
+
+    @property
+    def name(self,):
+        return "ugprompt"
 
     def get_inner_edges(self, x):
         token_sim = x @ x.T
@@ -235,11 +240,16 @@ class BasePrompt(nn.Module):
 class AllInOneOrginal(nn.Module):
     def __init__(self, token_dim, token_num, cross_prune=0.1, inner_prune=0.3):
         super(AllInOneOrginal, self).__init__()
+        self.prefix_prompt = True
         self.inner_prune = inner_prune
         self.cross_prune = cross_prune
         self.token_embeds = torch.nn.Parameter(torch.empty(token_num, token_dim))
         torch.nn.init.kaiming_uniform_(self.token_embeds, nonlinearity='leaky_relu', mode='fan_in', a=0.01)
         self.pg = self.pg_construct()
+
+    @property
+    def name(self,):
+        return "all_in_one"
 
     def pg_construct(self,):
         token_sim = torch.mm(self.token_embeds, torch.transpose(self.token_embeds, 0, 1))
@@ -270,17 +280,21 @@ class AllInOneOrginal(nn.Module):
             y = g.y
             data = Data(x=x, edge_index=edge_index, y=y)
             re_graph_batch.append(data)
-        if not isinstance(re_graph_batch, Batch):
-            assert isinstance(re_graph_batch, List)
-            re_graph_batch = Batch.from_data_list(re_graph_batch)
+        re_graph_batch = Batch.from_data_list(re_graph_batch)
         return re_graph_batch
+
 
 class GPFPlus(nn.Module):
     def __init__(self, token_dim, token_num):
         super(GPFPlus, self).__init__()
+        self.prefix_prompt = True
         self.token_embeds = torch.nn.Parameter(torch.empty(token_num, token_dim))
         torch.nn.init.kaiming_uniform_(self.token_embeds, nonlinearity='leaky_relu', mode='fan_in', a=0.01)
         self.dropout = nn.Dropout(0.3)
+
+    @property
+    def name(self,):
+        return "gpf_plus"
 
     def forward(self, graph_batch, device = None):
         if isinstance(graph_batch, Batch):
@@ -295,9 +309,163 @@ class GPFPlus(nn.Module):
             x = g.x + prompt
             edge_index = g.edge_index
             y = g.y
-            data = Data(x=x, edge_index=edge_index, y=y).to(graph_batch[0].x.device)
+            data = Data(x=x, edge_index=edge_index, y=y).to(g.x.device)
             re_graph_batch.append(data)
-        if not isinstance(re_graph_batch, Batch):
-            assert isinstance(re_graph_batch, List)
-            re_graph_batch = Batch.from_data_list(re_graph_batch)
+        re_graph_batch = Batch.from_data_list(re_graph_batch)
         return re_graph_batch
+
+
+class GraphPrompt(nn.Module):
+    def __init__(self, token_dim):
+        super(GraphPrompt, self).__init__()
+        self.prefix_prompt = False
+        self.token_embeds = torch.nn.Parameter(torch.empty(1, token_dim))
+        torch.nn.init.xavier_uniform_(self.token_embeds)
+
+    @property
+    def name(self,):
+        return "graph_prompt"
+
+    @classmethod
+    def loss(cls, input:torch.Tensor, target:torch.Tensor, num_classes, temperature=1.0):
+        centers, counts = cls.cal_temp_centers(input, target, num_classes)
+        scores = F.cosine_similarity(input[:, None, :], centers[None, :, :], dim=-1) / temperature
+        pos_scores = scores.gather(dim=1, index=target.view(-1, 1))
+        neg_scores = scores.logsumexp(dim=1)
+        loss = -(pos_scores - neg_scores).mean()
+        return loss
+
+    @staticmethod
+    def cal_temp_centers(embeds, labels, num_classes):
+        counts = labels.bincount(minlength=num_classes)
+        centers = torch.zeros((num_classes, embeds.size(-1)), device=embeds.device)
+        centers.scatter_reduce_(dim=0, index=labels.view(-1, 1).tile(1, embeds.size(-1)), src=embeds, reduce="sum")
+        centers = centers / torch.maximum(counts, torch.tensor(1e-8))[:, None]
+        return centers, counts
+
+    def update_centers(self, pretrained_model, dataset, device):
+        accumulated_centers = 0
+        accumulated_counts = 0
+        for i, (batch, idxs) in enumerate(dataset.train_loader):
+            batch = batch.to(device)
+            idxs = idxs.to(device)
+            _, embeds = pretrained_model(
+                batch,
+                decoder = False,
+                )
+            embeds = self.forward(embeds, batch.batch)
+            temp_centers, temp_counts = GraphPrompt.cal_temp_centers(embeds, batch.y, dataset.num_gclass)
+            accumulated_centers += temp_centers * temp_counts.view(-1, 1)
+            accumulated_counts += temp_counts.view(-1, 1)
+        self._centers = accumulated_centers / accumulated_counts
+
+    def get_centers(self,):
+        return self._centers
+
+    def forward(self, node_embeds, batch_idxs, device = None):
+        node_embeds *= self.token_embeds
+        graph_embeds = global_mean_pool(node_embeds, batch_idxs)
+        return graph_embeds
+
+
+class GPPT(nn.Module):
+    def __init__(self, in_channels, out_channels, num_centers):
+        super(GPPT, self).__init__()
+        self.prefix_prompt = True
+        self.num_centers = num_centers
+        self.out_channels = out_channels
+        self.graph_conv = SAGEConv(in_channels, in_channels, root_weight=True)
+        self.center_classifier = nn.Linear(in_channels, num_centers, bias=False)
+        self.output_classifier = nn.ModuleList([nn.Linear(in_channels, out_channels, bias=False) for _ in range(num_centers)])
+
+    @property
+    def name(self,):
+        return "gppt"
+
+    def get_firsthop_ds_x(self, graphs, device = None):
+        if isinstance(graphs, Batch):
+            graphs = graphs.to_data_list()
+        if device is not None:
+            graphs = [g.to(device) for g in graphs]
+
+        ds_x = []
+        for g in graphs:
+            x = self.graph_conv(g.x, edge_index)
+            x = F.relu(x)
+            one_hop_idxs = g.edge_index[1, (g.edge_index[0, :] == g.ego_idx).nonzero().view(-1)]
+            ego_x = x[g.ego_idx]
+            neighbor_x = x[one_hop_idxs].mean(dim=0)
+            ds_x.append(torch.cat([ego_x, neighbor_x], dim=1))
+        ds_x = torch.stack(ds_x, dim=0)
+
+        return graphs, ds_x
+
+    def get_ds_x(self, gnn_x, graph_batch, device = None, with_neighbor = False):
+        if not isinstance(graph_batch, Batch):
+            graph_batch = Batch.from_data_list(graph_batch)
+        if device is not None:
+            graph_batch = graph_batch.to(device)
+
+        neighbor_counts = graph_batch.batch.unique(return_counts=True)[1]
+        diff_idxs = (graph_batch.batch.roll(shifts=1) != graph_batch.batch).nonzero().view(-1)
+        ego_idxs = diff_idxs + graph_batch.ego_idx
+        ds_x = gnn_x[ego_idxs]
+        
+        if with_neighbor:
+            batch_size = graph_batch.batch.max() + 1
+            graph_batch.batch[ego_idxs] = batch_size
+            neighbor_x = torch.zeros((batch_size, gnn_x.size(-1)))
+            neighbor_x.scatter_add_(dim=0, index=graph_batch.batch[:, None].tile(gnn_x.size(-1)), src=gnn_x)
+            neighbor_x = neighbor_x[:-1]
+            ds_x = torch.cat([ds_x, neighbor_x], dim=1)
+
+        return ds_x
+    
+    def init_weights(self, graphs, device = None):
+        x = self.graph_conv(g.x, edge_index)
+        x = F.relu(x)
+        ds_x = self.get_ds_x(graphs, device)
+        _, embeds = pretrained_model(
+            batch,
+            decoder = False,
+            device = self.device
+            )
+        
+        cluster = KMeans(n_clusters=self.num_centers, random_state=0).fit(ds_x.detach().cpu().numpy())
+        cluster_centers_x = torch.FloatTensor(cluster.cluster_centers_).to(ds_x.device)
+        self.center_classifier.weight.data.copy_(cluster_centers_x)
+
+        class_centers = torch.zeros((self.out_channels, ds_x.size(-1)))
+        labels = torch.tensor([g.y for g in graphs]).to(ds_x.device)
+        class_centers.scatter_reduce_(dim=1, index=labels.view(-1, 1).tile(1, ds_x.size(-1)), src=ds_x, reduce="mean")
+
+        for layer in self.output_classifier:
+            layer.weight.data.copy_(temp)
+
+    def update_centers(self, x):
+        device = x.device
+        cluster = KMeans(n_clusters=self.num_centers,random_state=0).fit(x.detach().cpu().numpy())
+        cluster_centers_x = torch.FloatTensor(cluster.cluster_centers_).to(device)
+        self.center_classifier.weight.data.copy_(cluster_centers_x)
+
+    def get_reg_loss(self,):
+        norm_sum = 0
+        p_count = 0
+        for name, p in self.named_parameters():
+            if name.startswith('output_classifier'):
+                norm_sum += torch.norm(p@p.T -torch.eye(p.size(0), device=p.device))
+                p_count += 1
+        return 0.001 * norm_sum/p_count
+
+    def forward(self, gnn_x, graphs, device = None):
+        ds_x = self.get_ds_x(gnn_x, graphs, device)
+        self.mid_x = ds_x
+
+        center_scores = self.center_classifier(ds_x)
+        center_idx = center_scores.argmax(dim=1)
+        logits = torch.zeros(ds_x.size(0), self.out_channels, device=ds_x.device)
+        for i, layer in enumerate(self.output_classifier):
+            mask = center_idx==i
+            logits[mask] = layer(ds_x[mask])
+
+        return logits
