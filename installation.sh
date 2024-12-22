@@ -9,6 +9,7 @@ pip install torch-geometric;
 pip install torcheval;
 pip install torchmetrics;
 pip install matplotlib;
+pip install scikit-learn;
 pip install pandas;
 pip install ipdb;
 pip install gdown;
