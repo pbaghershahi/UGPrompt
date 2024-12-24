@@ -14,7 +14,7 @@ class PromptTrainer():
         super(PromptTrainer, self).__init__()
         self.training_config = training_config
         self.training_method = training_method
-        if training_method in ["gpf_plus", "all_in_one_original"]:
+        if training_method in ["head_tuning", "gpf_plus", "all_in_one"]:
             self.train_func = self.supervised
             self.loss_func = partial(F.cross_entropy, reduction='mean')
         elif training_method == "graph_prompt":
@@ -29,6 +29,8 @@ class PromptTrainer():
         elif training_method == "flex_match":
             self.train_func = self.consistency
             self.get_mask = self.flex_match_mask
+        else:
+            raise NotImplementedError
         self.classwise_beta = torch.zeros((training_config["num_classes"],), dtype=torch.float, device=device)
         self.cut_off = training_config["cut_off"]
         self.device = device
@@ -128,20 +130,22 @@ class PromptTrainer():
 
     def supervised(self, pretrained_model, prompt_model, batch, **kwargs):
         labels = batch.y.to(self.device)
-        if prompt_model.prefix_prompt:
+        if prompt_model.name in ["head_tuning", "gpf_plus", "all_in_one"]:
             batch = prompt_model(batch, device=self.device)
             logits, embeds = pretrained_model(
                 batch,
                 decoder = True,
                 device = self.device
                 )
-        else:
+        elif prompt_model.name in ["graph_prompt"]:
             _, embeds = pretrained_model(
                 batch,
                 decoder = False,
                 device = self.device
                 )
             logits = prompt_model(embeds, batch.batch, device=self.device)
+        else:
+            raise NotImplementedError
         loss = self.loss_func(input=logits, target=labels)
         if self.training_config["r_reg"] > 0.0 and not prompt_model.trans_x:
             loss += self.training_config["r_reg"] * prompt_model.token_embeds.pow(2).mean()

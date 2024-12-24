@@ -109,6 +109,7 @@ def prompting(
     binary_task = False if s_dataset.num_gclass > 2 else True
     training_config["binary_task"] = binary_task
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    test_mode = "pretrain" if prompt_method == "head_tuning" else "prompt"
     main_model = PretrainedModel(**pretrained_config)
     discr_config = {
         "in_channels":pretrained_config["hidden_channels"], 
@@ -118,7 +119,7 @@ def prompting(
     main_model.to(device)
     load_model(main_model, read_checkpoint=True, pretrained_path=pretrained_path)
     for name, param in main_model.named_parameters():
-        if name.startswith("linear_decoder") and training_config["tune_decoder"]:
+        if training_config["tune_decoder"] and name.startswith("linear_decoder"):
             continue
         param.requires_grad = False
         
@@ -144,8 +145,8 @@ def prompting(
     results["prompt_test_f1"] = []
     results["prompt_valid_f1"] = []
     for k in range(num_runs):
-    
-        if prompt_method == "all_in_one_original":
+
+        if prompt_method == "all_in_one":
             pmodel = AllInOneOrginal(**prompt_config)
         elif prompt_method == "gpf_plus":
             pmodel = GPFPlus(**prompt_config)
@@ -157,15 +158,30 @@ def prompting(
             pmodel = BasePrompt(**prompt_config)
         elif prompt_method == "flex_match":
             pmodel = BasePrompt(**prompt_config)
+        elif prompt_method == "head_tuning":
+            main_model = PretrainedModel(**pretrained_config)
+            main_model.to(device)
+            load_model(main_model, read_checkpoint=True, pretrained_path=pretrained_path)
+            for name, param in main_model.named_parameters():
+                if name.startswith("linear_decoder"):
+                    continue
+                param.requires_grad = False
+            pmodel = HeadTuning(**prompt_config)
+        else:
+            raise NotImplementedError
+        
         pmodel.to(device)
+        main_model.eval()
 
         discriminator = Discriminator(**discr_config)
         discriminator.to(device)
 
-        if not training_config["tune_decoder"]:
-            main_model.eval()
-
-        opt_params = list(pmodel.parameters()) + list(main_model.parameters()) if training_config["tune_decoder"] else list(pmodel.parameters())
+        if prompt_method == "head_tuning":
+            opt_params = main_model.parameters()
+        elif training_config["tune_decoder"]:
+            opt_params = list(pmodel.parameters()) + list(main_model.parameters())
+        else:
+            opt_params = pmodel.parameters()
         optimizer = Adam(opt_params, lr = optimizer_config["lr"], weight_decay = optimizer_config["weight_decay"])
         optimizer_d = Adam(discriminator.parameters(), lr = optimizer_config["lr"], weight_decay = optimizer_config["weight_decay"])
         scheduler = StepLR(optimizer, step_size = optimizer_config["scheduler_step_size"], gamma = optimizer_config["scheduler_gamma"])
@@ -176,10 +192,7 @@ def prompting(
         n_epochs = training_config["n_epochs"]
         for epoch in range(n_epochs):
             pmodel.train()
-            if training_config["tune_decoder"]:
-                main_model.train()
-            else:
-                main_model.eval()
+            main_model.eval()
             loss = Trainer.train(
                 t_dataset, main_model, pmodel, optimizer, logger, 
                 discriminator = discriminator, optimizer_d = optimizer_d,
@@ -191,7 +204,7 @@ def prompting(
             if epoch % eval_step == 0 or epoch >= n_epochs - 6:
                 pmodel.eval()
                 main_model.eval()
-                valid_loss, valid_acc, valid_f1 = test(main_model, t_dataset, device, binary_task = binary_task, mode = "prompt", pmodel = pmodel, validation = True)
+                valid_loss, valid_acc, valid_f1 = test(main_model, t_dataset, device, binary_task = binary_task, mode = test_mode, pmodel = pmodel, validation = True)
                 logger.info(f"Epoch: {epoch}/{n_epochs} -- Train Loss: {loss:.3f} -- Validation Loss: {valid_loss:.3f} -- Validation ACC: {valid_acc:.3f} -- Validation F1: {valid_f1:.3f}")
                 if epoch >= n_epochs - 6:
                     valid_average_acc.append(valid_acc)
@@ -204,7 +217,7 @@ def prompting(
         results["prompt_valid_acc"].append(valid_average_acc)
         results["prompt_valid_f1"].append(valid_average_f1)
 
-        test_loss, test_acc, test_f1 = test(main_model, t_dataset, device, binary_task = binary_task, mode = "prompt", pmodel = pmodel, validation = False)
+        test_loss, test_acc, test_f1 = test(main_model, t_dataset, device, binary_task = binary_task, mode = test_mode, pmodel = pmodel, validation = False)
         logger.info(f"Test Results of Run {k}/{num_runs}: -- Test Loss: {test_loss:.3f} -- Test ACC: {test_acc:.3f} -- Test F1: {test_f1:.3f}")
         results["prompt_test_acc"].append(test_acc)
         results["prompt_test_f1"].append(test_f1)

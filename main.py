@@ -158,7 +158,7 @@ def main(args) -> None:
         )
         # ipdb.set_trace()
 
-        if args.prompt_method in ["all_in_one_original", "gpf_plus", "graph_prompt", "gppt"]:
+        if args.prompt_method in ["head_tuning", "all_in_one", "gpf_plus", "graph_prompt", "gppt"]:
             training_config = dict(
                 n_epochs = args.n_epochs,
                 r_reg = args.r_reg,
@@ -187,7 +187,7 @@ def main(args) -> None:
         else:
             raise NotImplementedError
             
-        if args.prompt_method == "all_in_one_original":
+        if args.prompt_method == "all_in_one":
             prompt_config = dict(
                 token_dim = t_dataset.n_feats,
                 token_num = num_tokens,
@@ -209,6 +209,8 @@ def main(args) -> None:
                 out_channels = s_dataset.num_gclass,
                 num_centers = 5
             )
+        elif args.prompt_method == "head_tuning":
+            prompt_config = dict()
         elif args.prompt_method in ["fix_match", "flex_match"]:
             prompt_config = dict(
                 emb_dim = t_dataset.n_feats,
@@ -263,7 +265,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='UPrompt')
     parser.add_argument("-itrs", "--total-iters", type=int, default=2, help="Total number of trials with random initialization of datasets")
     parser.add_argument("-pm", "--prompt-method", type=str, 
-                        help="Prompting method: [contrastive, pseudo_labeling, all_in_one_original, all_in_one_modified, gpf_plus]")
+                        help="Prompting method: [contrastive, pseudo_labeling, all_in_one, all_in_one_modified, gpf_plus]")
     parser.add_argument("-sds", "--s-dataset", type=str, 
                         help="Source dataset: [Cora, CiteSeer, PubMed, ENZYMES, PROTEINS_full, AIDS, Letter-high, Letter-low, Letter-med, digg, oag, twitter, weibo]")
     parser.add_argument("-tds", "--t-dataset", type=str, 

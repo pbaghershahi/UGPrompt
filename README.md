@@ -45,7 +45,7 @@ Methods | method name |
 :--- | :---: |
 UGPrompt | ```fix_match```/```flex_match``` |
 GPF-Plus | ```gpf_plus``` |
-All-In-One | ```all_in_one_original``` |
+All-In-One | ```all_in_one``` |
 
 To change the prompting function use the ```--prompt-method``` argument.
 

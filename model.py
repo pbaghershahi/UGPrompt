@@ -469,3 +469,18 @@ class GPPT(nn.Module):
             logits[mask] = layer(ds_x[mask])
 
         return logits
+
+
+class HeadTuning(nn.Module):
+    def __init__(self, *args, **kwargs):
+        super(HeadTuning, self).__init__()
+        pass
+
+    @property
+    def name(self,):
+        return "head_tuning"
+
+    def forward(self, graph_batch, device = None):
+        if device is not None:
+            graph_batch = graph_batch.to(device)
+        return graph_batch
