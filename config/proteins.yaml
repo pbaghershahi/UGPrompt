@@ -30,7 +30,7 @@ noise_cov_scale: 1.0
 noise_mean_shift: 5.0
 noise_shift_mode: homophily
 num_runs: 2
-p_raug: 0.0
+p_raug: 0.3
 p_shift_inter: null
 p_shift_intra: null
 pos_aug_mode: mask
