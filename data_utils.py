@@ -197,6 +197,7 @@ def node_property_splits(data_graph, src_ratio, shift_mode="pr", select_mode="so
     for key, value in property_dict.items():
         properties[key] = value
     if select_mode == "soft":
+        properties += 1e-8
         selec_probs = properties / properties.sum()
         src_idxs = torch.as_tensor(np.random.choice(n_samples, int(n_samples * src_ratio), replace=False, p=selec_probs.numpy()))
     else:
