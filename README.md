@@ -46,6 +46,8 @@ Methods | method name |
 UGPrompt | ```fix_match```/```flex_match``` |
 GPF-Plus | ```gpf_plus``` |
 All-In-One | ```all_in_one``` |
+GraphPrompt | ```graph_prompt``` |
+GPPT | ```gppt``` |
 
 To change the prompting function use the ```--prompt-method``` argument.
 
