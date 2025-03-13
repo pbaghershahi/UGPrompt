@@ -1,6 +1,6 @@
 import torch, random, os
 import numpy as np
-from torch_geometric.datasets import QM9, TUDataset, CitationFull, Planetoid, Airports
+from torch_geometric.datasets import QM9, TUDataset, CitationFull, Planetoid, Flickr
 from utils import *
 from model import *
 import pandas as pd
@@ -390,9 +390,9 @@ class NodeToGraphDataset(GDataset):
                 mode=normalize_mode, normal_params = train_normal_params)
 
     def init_loaders_(self, batch_size, loader_collate = graph_collate):
-        self.train_loader = DataLoader(self.train_ds, batch_size=batch_size, shuffle=True, collate_fn=loader_collate, num_workers=1)
-        self.valid_loader = DataLoader(self.valid_ds, batch_size=batch_size, shuffle=False, collate_fn=loader_collate, num_workers=1)
-        self.test_loader = DataLoader(self.test_ds, batch_size=batch_size, shuffle=False, collate_fn=loader_collate, num_workers=1)
+        self.train_loader = DataLoader(self.train_ds, batch_size=batch_size, shuffle=True, collate_fn=loader_collate, num_workers=0)
+        self.valid_loader = DataLoader(self.valid_ds, batch_size=batch_size, shuffle=False, collate_fn=loader_collate, num_workers=0)
+        self.test_loader = DataLoader(self.test_ds, batch_size=batch_size, shuffle=False, collate_fn=loader_collate, num_workers=0)
 
     def initialize(
             self,
@@ -561,10 +561,15 @@ class GenDataset(object):
         select_mode = "soft"
     ):
 
-        dataset = Planetoid(
-            root = f'data/{ds_name}',
-            name = ds_name
+        if ds_name == "Flickr":
+            dataset = Flickr(
+                root = f'data/{ds_name}', 
             )
+        else:
+            dataset = Planetoid(
+                root = f'data/{ds_name}',
+                name = ds_name
+                )
         data = deepcopy(dataset._data.subgraph(dataset._data.edge_index.unique()))
 
         fix_seed(seed)

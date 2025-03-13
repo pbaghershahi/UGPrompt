@@ -65,7 +65,7 @@ def main(args) -> None:
     for i in range(total_iters):
         logger.info(f"Started round {i}/{total_iters} of experiments!")
         gen_ds = GenDataset(logger)
-        if args.s_dataset in ["Cora", "CiteSeer", "PubMed"]:
+        if args.s_dataset in ["Cora", "CiteSeer", "PubMed", "Flickr"]:
             s_dataset, t_dataset = gen_ds.get_node_dataset(
                 args.s_dataset,
                 shift_type = args.shift_type,
