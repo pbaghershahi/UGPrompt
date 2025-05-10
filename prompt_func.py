@@ -17,7 +17,7 @@ class PromptTrainer():
         if training_method in ["head_tuning", "gpf_plus", "all_in_one"]:
             self.train_func = self.supervised
             self.loss_func = partial(F.cross_entropy, reduction='mean')
-        elif training_method == "graph_prompt":
+        elif training_method in ["graph_prompt", "graph_prompt_plus"]:
             self.train_func = self.supervised
             self.loss_func = partial(GraphPrompt.loss, num_classes=self.training_config["num_classes"], temperature=1.0)
         elif training_method == "gppt":
@@ -137,11 +137,12 @@ class PromptTrainer():
                 decoder = True,
                 device = self.device
                 )
-        elif prompt_model.name in ["graph_prompt"]:
+        elif prompt_model.name in ["graph_prompt", "graph_prompt_plus"]:
             _, embeds = pretrained_model(
                 batch,
                 decoder = False,
-                device = self.device
+                device = self.device,
+                prompt_params = None if prompt_model.name == "graph_prompt" else prompt_model.prompt_params
                 )
             logits = prompt_model(embeds, batch.batch, device=self.device)
         else:
@@ -192,6 +193,6 @@ class PromptTrainer():
                 loss = self.train_func(pretrained_model, prompt_model, batch, idxs=idxs, t_dataset=t_dataset, **kwargs)
                 loss.backward()
                 optimizer.step()
-            if self.training_method == "graph_prompt":
+            if self.training_method in ["graph_prompt", "graph_prompt_plus"]:
                 prompt_model.update_centers(pretrained_model, t_dataset, self.device)
         return loss

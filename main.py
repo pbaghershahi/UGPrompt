@@ -156,9 +156,8 @@ def main(args) -> None:
             scheduler_gamma = args.gamma,
             weight_decay = args.weight_decay
         )
-        # ipdb.set_trace()
 
-        if args.prompt_method in ["head_tuning", "all_in_one", "gpf_plus", "graph_prompt", "gppt"]:
+        if args.prompt_method in ["head_tuning", "all_in_one", "gpf_plus", "graph_prompt", "gppt", "graph_prompt_plus"]:
             training_config = dict(
                 n_epochs = args.n_epochs,
                 r_reg = args.r_reg,
@@ -202,6 +201,12 @@ def main(args) -> None:
         elif args.prompt_method == "graph_prompt":
             prompt_config = dict(
                 token_dim = args.gnn_h_dim,
+            )
+        elif args.prompt_method == "graph_prompt_plus":
+            prompt_config = dict(
+                in_channels = s_dataset.n_feats,
+                hidden_channels = args.gnn_h_dim,
+                num_layers = args.gnn_num_layers, 
             )
         elif args.prompt_method == "gppt":
             prompt_config = dict(

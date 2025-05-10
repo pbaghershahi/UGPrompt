@@ -78,29 +78,40 @@ class PretrainedModel(nn.Module):
         else:
             raise Exception("The model is not implemented!")
     
-    def forward(self, graph_batch, decoder = True, device = None):
+    def forward(self, graph_batch, decoder = True, device = None, prompt_params=None):
         if isinstance(graph_batch, list):
             graph_batch = Batch.from_data_list(graph_batch)
         if device is not None:
             graph_batch = graph_batch.to(device)
-        x = graph_batch.x
-        for i, layer in enumerate(self.gnn_layers):
-            x = layer(x, graph_batch.edge_index)
-            x = self.bns[i](x) if self.with_bn else x
-            x = F.relu(x)
-            if i < len(self.gnn_layers) - 1:
-                x = F.dropout(x, p=self.dropout, training=self.training)
-        if not decoder:
-            return "scores", x
-        if not self.with_head:
-            x = F.dropout(x, p=self.dropout, training=self.training)
-            x = self.gnn_decoder(x, graph_batch.edge_index)
-            scores = global_mean_pool(x, graph_batch.batch)
-        if self.with_head:
-            x = global_mean_pool(x, graph_batch.batch)
-            scores = F.dropout(x, p=self.dropout, training=self.training)
-            scores = self.linear_decoder(scores)
-        return scores, x
+        x_p = []
+        # ipdb.set_trace()
+        for j in range(self.num_layers+1):
+            x = graph_batch.x.clone()
+            for i, layer in enumerate(self.gnn_layers):
+                if (i == j) and (prompt_params is not None):
+                    x *= prompt_params[j]
+                x = layer(x, graph_batch.edge_index)
+                x = self.bns[i](x) if self.with_bn else x
+                x = F.relu(x)
+                if i < len(self.gnn_layers) - 1:
+                    x = F.dropout(x, p=self.dropout, training=self.training)
+            if not decoder:
+                if prompt_params is None:
+                    return "scores", x
+                x_p.append(x)
+            if prompt_params is not None:
+                continue
+            else:
+                if not self.with_head:
+                    x = F.dropout(x, p=self.dropout, training=self.training)
+                    x = self.gnn_decoder(x, graph_batch.edge_index)
+                    scores = global_mean_pool(x, graph_batch.batch)
+                if self.with_head:
+                    x = global_mean_pool(x, graph_batch.batch)
+                    scores = F.dropout(x, p=self.dropout, training=self.training)
+                    scores = self.linear_decoder(scores)
+                return scores, x
+        return "scores", x_p
     
 
 class BasePrompt(nn.Module):
@@ -367,6 +378,49 @@ class GraphPrompt(nn.Module):
         graph_embeds = global_mean_pool(node_embeds, batch_idxs)
         return graph_embeds
 
+
+class GraphPromptPlus(GraphPrompt):
+    def __init__(self, in_channels, hidden_channels, num_layers):
+        super(GraphPromptPlus, self).__init__(in_channels)
+        self.prefix_prompt = False
+        self.prompt_params = nn.ParameterList([torch.nn.Parameter(torch.empty(1, in_channels))])
+        for _ in range(num_layers):
+            self.prompt_params.append(torch.nn.Parameter(torch.empty(1, hidden_channels)))
+        for param in self.prompt_params:
+            torch.nn.init.xavier_uniform_(param)
+        self.layer_weights = torch.nn.Parameter(torch.empty(len(self.prompt_params), 1))
+        torch.nn.init.xavier_uniform_(self.layer_weights)
+
+    @property
+    def name(self,):
+        return "graph_prompt_plus"
+
+    def update_centers(self, pretrained_model, dataset, device):
+        accumulated_centers = 0
+        accumulated_counts = 0
+        for i, (batch, idxs) in enumerate(dataset.train_loader):
+            batch = batch.to(device)
+            idxs = idxs.to(device)
+            _, embeds = pretrained_model(
+                batch,
+                decoder = False,
+                prompt_params = self.prompt_params
+                )
+            embeds = self.forward(embeds, batch.batch)
+            temp_centers, temp_counts = GraphPrompt.cal_temp_centers(embeds, batch.y, dataset.num_gclass)
+            accumulated_centers += temp_centers * temp_counts.view(-1, 1)
+            accumulated_counts += temp_counts.view(-1, 1)
+        self._centers = accumulated_centers / accumulated_counts
+        
+    def forward(self, node_embeds, batch_idxs, device = None):
+        # ipdb.set_trace()
+        n_nodes, n_feats = node_embeds[0].size()
+        node_embeds[-1] *= self.prompt_params[-1]
+        node_embeds = torch.cat([embds.view(1, -1) for embds in node_embeds], dim=0)
+        weighted_embeds = node_embeds.T @ self.layer_weights
+        graph_embeds = global_mean_pool(weighted_embeds.view(n_nodes, n_feats).contiguous(), batch_idxs)
+        return graph_embeds
+        
 
 class GPPT(nn.Module):
     def __init__(self, in_channels, out_channels, num_centers):

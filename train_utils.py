@@ -152,6 +152,8 @@ def prompting(
             pmodel = GPFPlus(**prompt_config)
         elif prompt_method == "graph_prompt":
             pmodel = GraphPrompt(**prompt_config)
+        elif prompt_method == "graph_prompt_plus":
+            pmodel = GraphPromptPlus(**prompt_config)
         elif prompt_method == "gppt":
             pmodel = GPPT(**prompt_config)
         elif prompt_method == "fix_match":

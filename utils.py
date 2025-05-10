@@ -38,11 +38,12 @@ def test(model, dataset, device, binary_task, mode, pmodel = None, validation = 
                         )
                     test_loss += F.cross_entropy(test_out, temp_labels, reduction="sum")
                     test_out = F.softmax(test_out, dim=1)
-                elif pmodel.name == "graph_prompt":
+                elif pmodel.name in ["graph_prompt", "graph_prompt_plus"]:
                     _, test_embeds = model(
                         batch,
                         decoder = False,
-                        device = device
+                        device = device,
+                        prompt_params = None if pmodel.name == "graph_prompt" else pmodel.prompt_params
                         )
                     test_out = pmodel(test_embeds, batch.batch, device=device)
                     test_loss += pmodel.loss(test_out, temp_labels, dataset.num_gclass)
