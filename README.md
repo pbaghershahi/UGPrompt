@@ -39,6 +39,7 @@ DHFR | ```./config/dhfr.yaml``` |
 Cora | ```./config/cora.yaml``` |
 CiteSeer | ```./config/citeseer.yaml``` |
 PubMed | ```./config/pubmed.yaml``` |
+Flickr | ```./config/flickr.yaml``` |
 
 ## Supported Prompting Methods
 Methods | method name |
@@ -47,6 +48,7 @@ UGPrompt | ```fix_match```/```flex_match``` |
 GPF-Plus | ```gpf_plus``` |
 All-In-One | ```all_in_one``` |
 GraphPrompt | ```graph_prompt``` |
+GraphPrompt+ | ```graph_prompt_plus``` |
 GPPT | ```gppt``` |
 
 To change the prompting function use the ```--prompt-method``` argument.
