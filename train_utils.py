@@ -5,8 +5,6 @@ import numpy as np
 from datetime import datetime
 from torch.optim import Adam
 from torch.optim.lr_scheduler import StepLR
-from ray import tune, train
-from ray.train import Checkpoint, RunConfig
 from utils import *
 from data_utils import *
 from prompt_func import *
@@ -28,7 +26,10 @@ def pretrain_model(
     tunning = False,
 ):
     binary_task = False if s_dataset.num_gclass > 2 else True
-    model = PretrainedModel(**model_config)
+    if model_config["gnn_type"] in ["graphgps"]:
+        model = GPS(**model_config)
+    else:
+        model = PretrainedModel(**model_config)
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model.to(device)
     
@@ -89,7 +90,8 @@ def pretrain_model(
         )
         logger.info(f"Model saved to: {model_path}")
     else:
-        model_path = "Won't be stored"
+        model_path = None
+        print("Model is not saved!")
     return model, model_path
     
 
@@ -110,7 +112,12 @@ def prompting(
     training_config["binary_task"] = binary_task
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     test_mode = "pretrain" if prompt_method == "head_tuning" else "prompt"
-    main_model = PretrainedModel(**pretrained_config)
+
+    if pretrained_config["gnn_type"] in ["graphgps"]:
+        main_model = GPS(**pretrained_config)
+    else:
+        main_model = PretrainedModel(**pretrained_config)
+        
     discr_config = {
         "in_channels":pretrained_config["hidden_channels"], 
         "hidden_channels":pretrained_config["hidden_channels"], 

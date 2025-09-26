@@ -1,3 +1,4 @@
+import torch_geometric.transforms as T
 from train_utils import *
 from utils import *
 from data_utils import *
@@ -65,7 +66,7 @@ def main(args) -> None:
     for i in range(total_iters):
         logger.info(f"Started round {i}/{total_iters} of experiments!")
         gen_ds = GenDataset(logger)
-        if args.s_dataset in ["Cora", "CiteSeer", "PubMed", "Flickr"]:
+        if args.s_dataset in ["Cora", "CiteSeer", "PubMed", "Flickr", "Computers", "Photo", "Cornell", "Texas", "Wisconsin"]:
             s_dataset, t_dataset = gen_ds.get_node_dataset(
                 args.s_dataset,
                 shift_type = args.shift_type,
@@ -82,9 +83,12 @@ def main(args) -> None:
                 node_attributes = True,
                 label_reduction = args.label_reduction,
                 seed = arg_seeds[i],
-                select_mode = args.noise_select_mode
+                select_mode = args.noise_select_mode,
+                transform = T.AddRandomWalkPE(
+                    walk_length = args.rand_walk_length, attr_name='pe'
+                ) if args.gnn_type in ["graphgps"] else None
             )
-        elif args.s_dataset in ["ENZYMES", "PROTEINS", "DHFR"]:
+        elif args.s_dataset in ["ENZYMES", "PROTEINS", "DHFR", "BBBP", "Tox21", "SIDER", "Lipo", "ESOL", "BACE"]:
             s_dataset, t_dataset = gen_ds.get_graph_dataset(
                 args.s_dataset,
                 shift_type = args.shift_type,
@@ -102,21 +106,38 @@ def main(args) -> None:
                 node_attributes = True,
                 label_reduction = args.label_reduction,
                 seed = arg_seeds[i],
-                select_mode = args.noise_select_mode
+                select_mode = args.noise_select_mode,
+                transform = T.AddRandomWalkPE(
+                    walk_length = args.rand_walk_length, attr_name='pe'
+                ) if args.gnn_type in ["graphgps"] else None
             )
         else:
             raise Exception("Dataset is not supported")
 
-        model_config = dict(
-            gnn_type = args.gnn_type,
-            in_channels = s_dataset.n_feats,
-            hidden_channels = args.gnn_h_dim,
-            out_channels = s_dataset.num_gclass,
-            num_layers = args.gnn_num_layers, 
-            dropout = args.gnn_dropout,
-            with_bn = False,
-            with_head = True,
-        )
+        if args.gnn_type in ["gcn", "gat", "gat2"]:
+            model_config = dict(
+                gnn_type = args.gnn_type,
+                in_channels = s_dataset.n_feats,
+                hidden_channels = args.gnn_h_dim,
+                out_channels = s_dataset.num_gclass,
+                num_layers = args.gnn_num_layers, 
+                dropout = args.gnn_dropout,
+                with_bn = False,
+                with_head = True,
+            )
+        elif args.gnn_type in ["graphgps"]:
+            model_config = dict(
+                gnn_type = args.gnn_type,
+                in_channels = s_dataset.n_feats,
+                in_pe_channels = args.rand_walk_length,
+                hidden_channels = args.gnn_h_dim, 
+                pe_hidden_channels = 8, 
+                out_channels = s_dataset.num_gclass,
+                num_layers = args.gnn_num_layers,
+                attn_type = 'multihead', 
+                attn_kwargs = {'dropout': 0.5},
+                dropout = args.gnn_dropout,
+            )
         optimizer_config = dict(
             lr = args.gnn_lr,
             scheduler_step_size = args.gnn_step_size,
@@ -138,7 +159,7 @@ def main(args) -> None:
                 training_config,
                 logger,
                 eval_step = args.gnn_eval_step,
-                save_model = True,
+                save_model = args.save_pretrained,
                 pretext_task = "classification",
                 model_dir = "./pretrained",
                 empty_pretrained_dir = args.empty_pretrained_dir
@@ -206,7 +227,8 @@ def main(args) -> None:
             prompt_config = dict(
                 in_channels = s_dataset.n_feats,
                 hidden_channels = args.gnn_h_dim,
-                num_layers = args.gnn_num_layers, 
+                num_layers = args.gnn_num_layers,
+                with_input_layer = False if args.gnn_type == "graphgps" else True
             )
         elif args.prompt_method == "gppt":
             prompt_config = dict(
@@ -280,6 +302,7 @@ if __name__ == '__main__':
     parser.add_argument("-shift", "--shift-type", type=str, default="structural", help="Shift Type: [feature, structural]")
     parser.add_argument("-p-intra", "--p-shift-intra", type=float, default=0.0, help="Probability of intra class structural shift")
     parser.add_argument("-p-inter", "--p-shift-inter", type=float, default=0.0, help="Probability of inter class structural shift")
+    parser.add_argument("-rwl", "--rand-walk-length", type=int, help="Length of random walk for GraphGPS")
     parser.add_argument("--pretrain", action='store_true')
     parser.add_argument("--save-pretrained", action='store_true')
     parser.add_argument("--soft-label", action='store_true')
@@ -287,6 +310,7 @@ if __name__ == '__main__':
     parser.add_argument("--attn-with-param", action='store_true')
     parser.add_argument("--empty-pretrained-dir", action='store_true')
     parser.add_argument("--iterative-clustering", action='store_true')
+    parser.add_argument("--gnn-without-head", action='store_true')
     parser.add_argument("--clutering-iters", type=int, help="Total rounds of updating cluster centers")
     parser.add_argument("--entropy-div-ratio", type=int, help="Ratio of deviding samples based on entropy for clustering")
     parser.add_argument("--w-entropy-loss", type=float, help="Weight of entropy loss")

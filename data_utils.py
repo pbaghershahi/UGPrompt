@@ -1,6 +1,6 @@
 import torch, random, os
 import numpy as np
-from torch_geometric.datasets import QM9, TUDataset, CitationFull, Planetoid, Flickr
+from torch_geometric.datasets import QM9, TUDataset, CitationFull, Planetoid, Flickr, MoleculeNet, Amazon, WebKB
 from utils import *
 from model import *
 import pandas as pd
@@ -15,6 +15,7 @@ from collections import OrderedDict
 from copy import deepcopy
 from sklearn.utils import shuffle as sk_shuffl
 from networkx import pagerank, diameter, all_pairs_shortest_path, density, clustering
+import torch_geometric.transforms as T
 import ipdb
 import gc
 
@@ -184,18 +185,44 @@ class SubsetRandomSampler(SubsetSampler):
         return (self.indices[i] for i in torch.randperm(len(self.indices)))
 
 
-def node_property_splits(data_graph, src_ratio, shift_mode="pr", select_mode="soft", drop_unconnected = True):
+def node_property_splits(
+    data_graph, 
+    src_ratio, 
+    shift_mode="pr", 
+    select_mode="soft", 
+    drop_unconnected = True,
+    save_path=None, 
+    load_path=None
+):
+
+    properties = None
     n_samples = data_graph.x.size(0)
-    print(shift_mode)
-    if shift_mode == "pr":
-        property_dict = pagerank(to_networkx(data_graph))
-    elif shift_mode == "cc":
-        property_dict = clustering(to_networkx(data_graph))
-    else:
-        raise Exception("Shift mode is not supported!")
-    properties = torch.zeros((n_samples,))
-    for key, value in property_dict.items():
-        properties[key] = value
+
+    if load_path and os.path.exists(load_path):
+        print(f"Loading pre-computed node properties from: {load_path}")
+        properties = torch.load(load_path)
+        if properties.size(0) != n_samples:
+             raise ValueError("Loaded properties have a different number of nodes than the input graph.")
+    
+    if properties is None:
+        print(f"Calculating node properties using '{shift_mode}' mode...")
+        nx_graph = to_networkx(data_graph, to_undirected=True)
+        
+        if shift_mode == "pr":
+            property_dict = pagerank(to_networkx(data_graph))
+        elif shift_mode == "cc":
+            property_dict = clustering(to_networkx(data_graph))
+        else:
+            raise Exception("Shift mode is not supported!")
+        properties = torch.zeros((n_samples,))
+        for key, value in property_dict.items():
+            properties[key] = value
+            
+        if save_path:
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            print(f"Saving node properties to: {save_path}")
+            torch.save(properties, save_path)
+            
     if select_mode == "soft":
         properties += 1e-8
         selec_probs = properties / properties.sum()
@@ -218,6 +245,7 @@ def node_property_splits(data_graph, src_ratio, shift_mode="pr", select_mode="so
 
     return src_idxs, tgt_idxs
 
+    
 
 def merge_induced_graphs(ref_idxs, all_nids, nids, edges):
     mapping = dict()
@@ -305,13 +333,18 @@ def get_nids(num_nodes, all_nids, ego_idxs):
 
 
 class InducedDataset(Dataset):
-    def __init__(self, node_ids, edge_idxs, x, y, **kwargs) -> None:
+    def __init__(self, node_ids, edge_idxs, x, y, org_edges, **kwargs) -> None:
         super(InducedDataset, self).__init__()
         self.x = x
         self.all_nids = node_ids
         self.all_edges = edge_idxs
         self.y = y
         self.preds = torch.ones_like(self.y).long() * -1
+        self.org_edges = org_edges
+        if "pe" in kwargs:
+            self.pe = kwargs["pe"]
+        else:
+            self.pe = None
         if "rev_ego_idxs" in kwargs:
             self.rev_ego_idxs = kwargs["rev_ego_idxs"]
 
@@ -326,12 +359,20 @@ class InducedDataset(Dataset):
         
     def _copy_idxs(self, ego_idxs):
         nids, all_idxs, rev_ego_idxs = get_nids(self.x.size(0), self.all_nids, ego_idxs.tolist())
+        org_edge_index, org_edge_attr = subgraph(
+            subset = ego_idxs,
+            edge_index = self.org_edges,
+            num_nodes = len(self),
+            relabel_nodes = True
+        )
         induced_ds = InducedDataset(
             nids,
             [self.all_edges[idx.item()] for idx in ego_idxs],
             self.x[all_idxs],
             self.y[ego_idxs],
-            rev_ego_idxs = rev_ego_idxs
+            rev_ego_idxs = rev_ego_idxs,
+            org_edges = org_edge_index,
+            pe = None if self.pe is None else self.pe[all_idxs],
         )
         return induced_ds
 
@@ -340,28 +381,38 @@ class InducedDataset(Dataset):
 
     def __getitem__(self, idx):
         x = self.x[self.all_nids[idx]]
+        if self.pe is None:
+            pe = None
+        else:
+            pe = self.pe[self.all_nids[idx]]
+        x = self.x[self.all_nids[idx]]
         y = self.y[idx]
         edges = self.all_edges[idx]
-        graph = Data(x=x, edge_index=edges, y=y)
+        graph = Data(x=x, edge_index=edges, y=y, pe=pe)
         graph.ego_idx = self.rev_ego_idxs[idx]
         return graph, idx
 
 
 class NodeToGraphDataset(GDataset):
-    def __init__(self,
-                 main_data,
-                 all_idxs,
-                 all_nids,
-                 all_edges,
-                 ego_idxs,
-                 n_hopes = 2,
-                 **kwargs) -> None:
+    def __init__(
+        self,
+        main_data,
+        all_idxs,
+        all_nids,
+        all_edges,
+        ego_idxs,
+        org_edges,
+        n_hopes = 2,
+        **kwargs
+    ) -> None:
         super(NodeToGraphDataset, self).__init__()
         self._data = InducedDataset( 
             all_nids, 
             all_edges,
             main_data.x[all_idxs],
-            main_data.y[ego_idxs]
+            main_data.y[ego_idxs],
+            org_edges,
+            pe = main_data.pe[all_idxs] if hasattr(main_data, "pe") else None
         )
         self.n_feats = main_data.x.size(1)
         self.num_nsamples = main_data.x.size(0)
@@ -467,11 +518,9 @@ class FromPyGGraph(GDataset):
         self._data = deepcopy(main_dataset)
         self.n_feats = self._data.x.size(1)
         self.num_nsamples = self._data.x.size(0)
-        self.num_nclass = self._data.num_node_labels
+        self.num_nclass = self._data.num_node_labels if hasattr(self._data, "num_node_labels") else None
         self.num_gclass = self._data.num_classes
         self.num_gsamples = len(self._data)
-        class_weight = self.num_gsamples / (self.num_gclass * torch.bincount(self._data.y))
-        self.class_weight = torch.as_tensor(class_weight, dtype=torch.float)
 
     def gen_graph_ds(self, dataset):
         if len(dataset) == 0:
@@ -481,9 +530,11 @@ class FromPyGGraph(GDataset):
         for i in range(x_idxs.size(0)-1):
             g = dataset[i]
             temp_g = Data(
-                x = dataset._data.x[x_idxs[i]:x_idxs[i+1], :], 
-                edge_index = g.edge_index, y = g.y
+                x = dataset._data.x[x_idxs[i]:x_idxs[i+1], :].float(), 
+                edge_index = g.edge_index, y = g.y.view(-1).long()
             )
+            if hasattr(self._data, "pe"):
+                temp_g.pe = dataset._data.pe[x_idxs[i]:x_idxs[i+1], :]
             all_graphs.append(temp_g)
         return all_graphs
 
@@ -558,23 +609,48 @@ class GenDataset(object):
         node_attributes = True,
         label_reduction = 0.0,
         seed = 2411,
-        select_mode = "soft"
+        select_mode = "soft",
+        transform = None
     ):
-
         if ds_name == "Flickr":
             dataset = Flickr(
                 root = f'data/{ds_name}', 
+                pre_transform = transform
+            )
+        elif ds_name in ["Computers", "Photo"]:
+            dataset = Amazon(
+                root = f'data/{ds_name}', 
+                name = ds_name,
+                pre_transform = transform
+            )
+        elif ds_name in ["Cornell", "Texas", "Wisconsin"]:
+            dataset = WebKB(
+                root = f'data/{ds_name}', 
+                name = ds_name,
+                pre_transform = T.ToUndirected() if transform is None else T.Compose([
+                    T.ToUndirected(),
+                    transform
+                ])
             )
         else:
             dataset = Planetoid(
                 root = f'data/{ds_name}',
-                name = ds_name
-                )
-        data = deepcopy(dataset._data.subgraph(dataset._data.edge_index.unique()))
+                name = ds_name,
+                pre_transform = transform
+            )
+        # ipdb.set_trace()
+        data = deepcopy(dataset[0].subgraph(dataset[0].edge_index.unique()))
 
         fix_seed(seed)
         all_nids, all_edges = get_induced_graphs(data, n_hops=1)
-        src_ego_idxs, tgt_ego_idxs = node_property_splits(data, src_ratio, shift_mode, select_mode, drop_unconnected=False)
+
+        properties_file = f'data/{ds_name}/{shift_mode}/properties.pt'
+        
+        src_ego_idxs, tgt_ego_idxs = node_property_splits(
+            data, src_ratio, shift_mode, select_mode, drop_unconnected=False, 
+            save_path=properties_file, load_path=properties_file
+        )
+        
         s_data = deepcopy(data.subgraph(src_ego_idxs))
         t_data = deepcopy(data.subgraph(tgt_ego_idxs))
         src_nids, src_edges = get_induced_graphs(s_data, n_hops=2)
@@ -598,7 +674,8 @@ class GenDataset(object):
             src_all_idxs,
             src_nids,
             src_edges,
-            src_ego_idxs
+            src_ego_idxs,
+            s_data.edge_index
         )
         s_dataset.initialize(
             train_test_split = s_split,
@@ -613,7 +690,8 @@ class GenDataset(object):
             tgt_all_idxs,
             tgt_nids,
             tgt_edges,
-            tgt_ego_idxs
+            tgt_ego_idxs,
+            t_data.edge_index
         )
         t_dataset.initialize(
             train_test_split = t_split,
@@ -645,17 +723,26 @@ class GenDataset(object):
         node_attributes = True,
         label_reduction = 0.0,
         seed = 2411,
-        select_mode = "soft"
+        select_mode = "soft",
+        transform = None
     ):
+
+        n_node_cls = None
+        if ds_name in ["ENZYMES", "PROTEINS", "DHFR"]:
+            dataset = TUDataset(
+                root = store_to_path,
+                name = ds_name,
+                use_node_attr = node_attributes,
+                pre_transform = transform,
+            )
+            n_node_cls = dataset.num_node_labels
+        elif ds_name in ["BBBP", "Tox21", "SIDER", "Lipo", "ESOL", "BACE"]:
+            dataset = MoleculeNet(
+                root = store_to_path, 
+                name = ds_name,
+                pre_transform = transform,
+            )
         
-        dataset = TUDataset(
-            root = store_to_path,
-            name = ds_name,
-            use_node_attr = node_attributes
-        )
-
-        n_node_cls = dataset.num_node_labels
-
         fix_seed(seed)
         if shift_type == "structural":
             src_idxs, tgt_idxs = graph_property_splits(dataset, src_ratio, shift_mode, select_mode, n_node_cls)

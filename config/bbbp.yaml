@@ -37,13 +37,13 @@ pos_aug_mode: mask
 prompt_fn: gpf_plus
 prompt_method: flex_match
 r_reg: 0.0
-s_dataset: PROTEINS
+s_dataset: BBBP
 save_pretrained: true
 seed: 1234
 shift_type: structural
 step_size: 50
 src_ratio: 0.5
-t_dataset: PROTEINS
+t_dataset: BBBP
 total_iters: 2
 w_domain_loss: 0.5
 w_entropy_loss: 0.0
@@ -55,7 +55,7 @@ light_aug_prob: 0.1
 light_aug_mode: mask
 num_tokens: 20
 n_shot_ratio: 0.0
-rand_walk_length: 5
+rand_walk_length: 20
 t_split:
 - 0.60
 - 0.30

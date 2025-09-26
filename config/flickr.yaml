@@ -55,6 +55,7 @@ light_aug_prob: 0.1
 light_aug_mode: mask
 num_tokens: 50
 n_shot_ratio: 0.0
+rand_walk_length: 5
 t_split:
 - 0.4
 - 0.5

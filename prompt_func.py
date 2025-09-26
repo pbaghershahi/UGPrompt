@@ -50,7 +50,7 @@ class PromptTrainer():
         idxs = idxs.to(self.device)
         pos_batch = [
             aug_graph(
-                Data(x = g.x, edge_index = g.edge_index, y = g.y), 
+                g.clone(), 
                 aug_prob = self.training_config["light_aug_prob"], 
                 aug_type = self.training_config["aug_type"], 
                 mode = self.training_config["light_aug_mode"]
@@ -59,7 +59,7 @@ class PromptTrainer():
         ]
         prompt_batch = [
             aug_graph(
-                Data(x = g.x, edge_index = g.edge_index, y = g.y), 
+                g.clone(), 
                 aug_prob = self.training_config["p_raug"], 
                 aug_type = self.training_config["aug_type"], 
                 mode = self.training_config["pos_aug_mode"]

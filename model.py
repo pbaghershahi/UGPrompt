@@ -5,12 +5,128 @@ import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.cluster import KMeans
 from torch_geometric.data import Data, Batch
-from torch_geometric.nn import GCNConv, GINConv, SAGEConv, GATConv, GCN, global_mean_pool
-from typing import List
+from torch_geometric.nn import GCNConv, GINConv, SAGEConv, GATConv, GCN, GATv2Conv, SSGConv, global_mean_pool, global_add_pool, GPSConv, GINEConv
+from typing import Any, Dict, Optional, List
+from torch_geometric.nn.attention import PerformerAttention
 from utils import *
 import ipdb
 
 
+
+class GPS(nn.Module):
+    def __init__(
+        self, 
+        in_channels: int,
+        in_pe_channels: int,
+        hidden_channels: int, 
+        pe_hidden_channels: int, 
+        out_channels: int,
+        num_layers: int,
+        attn_type: str, 
+        attn_kwargs: Dict[str, Any],
+        **kwargs
+    ):
+        super().__init__()
+
+        self.node_lin = nn.Linear(in_channels, hidden_channels - pe_hidden_channels)
+        self.pe_lin = nn.Linear(in_pe_channels, pe_hidden_channels)
+        # self.pe_norm = nn.BatchNorm1d(20)
+        # self.edge_emb = nn.Embedding(4, channels)
+
+        self.convs = nn.ModuleList()
+        for _ in range(num_layers):
+            seq_nn = nn.Sequential(
+                nn.Linear(hidden_channels, hidden_channels),
+                nn.ReLU(),
+                nn.Linear(hidden_channels, hidden_channels),
+            )
+            conv = GPSConv(
+                hidden_channels, 
+                GINConv(seq_nn), 
+                heads=4,
+                attn_type=attn_type, 
+                attn_kwargs=attn_kwargs
+            )
+            self.convs.append(conv)
+
+        self.linear_decoder = nn.Sequential(
+            nn.Linear(hidden_channels, hidden_channels // 2),
+            nn.ReLU(),
+            nn.Linear(hidden_channels // 2, hidden_channels // 4),
+            nn.ReLU(),
+            nn.Linear(hidden_channels // 4, out_channels),
+        )
+        self.redraw_projection = RedrawProjection(
+            self.convs,
+            redraw_interval=1000 if attn_type == 'performer' else None
+        )
+
+    # def forward(self, x, pe, edge_index, edge_attr, batch):
+    def forward(self, graph_batch, decoder = True, device = None, prompt_params=None):
+        if isinstance(graph_batch, list):
+            graph_batch = Batch.from_data_list(graph_batch)
+        if device is not None:
+            graph_batch = graph_batch.to(device)
+            
+        if self.training:
+            self.redraw_projection.redraw_projections()
+            
+        x, x_pe, edge_index, batch = graph_batch.x, graph_batch.pe, graph_batch.edge_index, graph_batch.batch
+        # x_pe = self.pe_norm(pe)
+        x = torch.cat((self.node_lin(x), self.pe_lin(x_pe)), dim=1)
+        # edge_attr = self.edge_emb(edge_attr)
+
+        for conv in self.convs:
+            x = conv(
+                x, 
+                edge_index, 
+                batch, 
+                # edge_attr=edge_attr
+            )
+        if not decoder:
+            return "scores", x
+        x = global_add_pool(x, batch)
+        scores = self.linear_decoder(x)
+        return scores, x
+
+
+
+class RedrawProjection:
+    def __init__(self, model: nn.Module,
+                 redraw_interval: Optional[int] = None):
+        self.model = model
+        self.redraw_interval = redraw_interval
+        self.num_last_redraw = 0
+
+    def redraw_projections(self):
+        if not self.model.training or self.redraw_interval is None:
+            return
+        if self.num_last_redraw >= self.redraw_interval:
+            fast_attentions = [
+                module for module in self.model.modules()
+                if isinstance(module, PerformerAttention)
+            ]
+            for fast_attention in fast_attentions:
+                fast_attention.redraw_projection_matrix()
+            self.num_last_redraw = 0
+            return
+        self.num_last_redraw += 1
+
+
+        
+class GATv2Encoder(nn.Module):
+    def __init__(self, in_channels, out_channels, heads=4, **kwargs):
+        super().__init__()
+        self.conv1 = GATv2Conv(in_channels, out_channels, heads=heads, **kwargs)
+        self.linear1 = nn.Linear(out_channels * heads, out_channels)
+
+    def forward(self, x, edge_index):
+        x = self.conv1(x, edge_index)
+        x = self.linear1(x)
+        return x
+
+
+    
 class Discriminator(nn.Module):
     def __init__(
             self,
@@ -75,10 +191,19 @@ class PretrainedModel(nn.Module):
             return GINConv(nn.Sequential(nn.Linear(in_channels, out_channels)))
         elif gnn_type == "sage":
             return SAGEConv(in_channels, out_channels)
+        # elif gnn_type == "gcn2":
+        #     return GCN2Conv()
+        elif gnn_type == "gat2":
+            return GATv2Encoder(in_channels, out_channels, heads=4) 
+        elif gnn_type == "ssgc":
+            return SSGConv(in_channels, out_channels, alpha=0.1, K=4)
+        # elif gnn_type == "gps":
+        #     return SAGEConv(in_channels, out_channels)
         else:
             raise Exception("The model is not implemented!")
     
     def forward(self, graph_batch, decoder = True, device = None, prompt_params=None):
+        # ipdb.set_trace()
         if isinstance(graph_batch, list):
             graph_batch = Batch.from_data_list(graph_batch)
         if device is not None:
@@ -133,8 +258,8 @@ class BasePrompt(nn.Module):
         self.head = nn.Linear(h_dim, output_dim)
         self.emb_dim = emb_dim
         self.prompt_fn = prompt_fn
-        self.token_embeds = torch.nn.Parameter(torch.empty(token_num, emb_dim))
-        torch.nn.init.kaiming_uniform_(self.token_embeds, nonlinearity='leaky_relu', mode='fan_in', a=0.01)
+        self.token_embeds = nn.Parameter(torch.empty(token_num, emb_dim))
+        nn.init.kaiming_uniform_(self.token_embeds, nonlinearity='leaky_relu', mode='fan_in', a=0.01)
         if prompt_fn == "gpf_plus":
             self.attn_with_param = attn_with_param
             if attn_with_param:
@@ -254,8 +379,8 @@ class AllInOneOrginal(nn.Module):
         self.prefix_prompt = True
         self.inner_prune = inner_prune
         self.cross_prune = cross_prune
-        self.token_embeds = torch.nn.Parameter(torch.empty(token_num, token_dim))
-        torch.nn.init.kaiming_uniform_(self.token_embeds, nonlinearity='leaky_relu', mode='fan_in', a=0.01)
+        self.token_embeds = nn.Parameter(torch.empty(token_num, token_dim))
+        nn.init.kaiming_uniform_(self.token_embeds, nonlinearity='leaky_relu', mode='fan_in', a=0.01)
         self.pg = self.pg_construct()
 
     @property
@@ -289,7 +414,17 @@ class AllInOneOrginal(nn.Module):
             x = torch.cat([self.pg.x, g.x], dim=0)
             edge_index = torch.cat([inner_edge_index, g_edge_index, cross_edge_index], dim=1)
             y = g.y
-            data = Data(x=x, edge_index=edge_index, y=y)
+            if hasattr(g, "pe"):
+                dummpy_pe = g.pe.mean(dim=0)[None, :].tile(self.pg.x.shape[0], 1)
+                pe = torch.cat((dummpy_pe, g.pe))
+            else:
+                pe = None
+            data = Data(
+                x = x, 
+                edge_index = edge_index, 
+                y = y,
+                pe = pe
+            )
             re_graph_batch.append(data)
         re_graph_batch = Batch.from_data_list(re_graph_batch)
         return re_graph_batch
@@ -299,8 +434,8 @@ class GPFPlus(nn.Module):
     def __init__(self, token_dim, token_num):
         super(GPFPlus, self).__init__()
         self.prefix_prompt = True
-        self.token_embeds = torch.nn.Parameter(torch.empty(token_num, token_dim))
-        torch.nn.init.kaiming_uniform_(self.token_embeds, nonlinearity='leaky_relu', mode='fan_in', a=0.01)
+        self.token_embeds = nn.Parameter(torch.empty(token_num, token_dim))
+        nn.init.kaiming_uniform_(self.token_embeds, nonlinearity='leaky_relu', mode='fan_in', a=0.01)
         self.dropout = nn.Dropout(0.3)
 
     @property
@@ -320,7 +455,10 @@ class GPFPlus(nn.Module):
             x = g.x + prompt
             edge_index = g.edge_index
             y = g.y
-            data = Data(x=x, edge_index=edge_index, y=y).to(g.x.device)
+            data = Data(
+                x=x, edge_index=edge_index, y=y,
+                pe= g.pe if hasattr(g, "pe") else None
+            ).to(g.x.device)
             re_graph_batch.append(data)
         re_graph_batch = Batch.from_data_list(re_graph_batch)
         return re_graph_batch
@@ -330,8 +468,8 @@ class GraphPrompt(nn.Module):
     def __init__(self, token_dim):
         super(GraphPrompt, self).__init__()
         self.prefix_prompt = False
-        self.token_embeds = torch.nn.Parameter(torch.empty(1, token_dim))
-        torch.nn.init.xavier_uniform_(self.token_embeds)
+        self.token_embeds = nn.Parameter(torch.empty(1, token_dim))
+        nn.init.xavier_uniform_(self.token_embeds)
 
     @property
     def name(self,):
@@ -380,16 +518,19 @@ class GraphPrompt(nn.Module):
 
 
 class GraphPromptPlus(GraphPrompt):
-    def __init__(self, in_channels, hidden_channels, num_layers):
+    def __init__(self, in_channels, hidden_channels, num_layers, with_input_layer=True):
         super(GraphPromptPlus, self).__init__(in_channels)
         self.prefix_prompt = False
-        self.prompt_params = nn.ParameterList([torch.nn.Parameter(torch.empty(1, in_channels))])
+        if with_input_layer:
+            self.prompt_params = nn.ParameterList([nn.Parameter(torch.empty(1, in_channels))])
+        else:
+            self.prompt_params = nn.ParameterList([nn.Parameter(torch.empty(1, hidden_channels))])
         for _ in range(num_layers):
-            self.prompt_params.append(torch.nn.Parameter(torch.empty(1, hidden_channels)))
+            self.prompt_params.append(nn.Parameter(torch.empty(1, hidden_channels)))
         for param in self.prompt_params:
-            torch.nn.init.xavier_uniform_(param)
-        self.layer_weights = torch.nn.Parameter(torch.empty(len(self.prompt_params), 1))
-        torch.nn.init.xavier_uniform_(self.layer_weights)
+            nn.init.xavier_uniform_(param)
+        self.layer_weights = nn.Parameter(torch.empty(len(self.prompt_params), 1))
+        nn.init.xavier_uniform_(self.layer_weights)
 
     @property
     def name(self,):
@@ -483,7 +624,7 @@ class GPPT(nn.Module):
             batch,
             decoder = False,
             device = self.device
-            )
+        )
         
         cluster = KMeans(n_clusters=self.num_centers, random_state=0).fit(ds_x.detach().cpu().numpy())
         cluster_centers_x = torch.FloatTensor(cluster.cluster_centers_).to(ds_x.device)
