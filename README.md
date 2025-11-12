@@ -40,6 +40,11 @@ Cora | ```./config/cora.yaml``` |
 CiteSeer | ```./config/citeseer.yaml``` |
 PubMed | ```./config/pubmed.yaml``` |
 Flickr | ```./config/flickr.yaml``` |
+BACE | ```./config/bace.yaml``` |
+BBBP | ```./config/bbbp.yaml``` |
+Cornell | ```./config/cornell.yaml``` |
+Wisconsin | ```./config/wisconsin.yaml``` |
+Texas | ```./config/texas.yaml``` |
 
 ## Supported Prompting Methods
 Methods | method name |
