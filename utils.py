@@ -11,13 +11,43 @@ from torchmetrics.classification import BinaryF1Score, MulticlassF1Score
 from sklearn.preprocessing import StandardScaler
 
 
-def test(model, dataset, device, binary_task, mode, pmodel = None, validation = True):
+
+def ece(logits, labels, n_bins=10):
+
+    # ECE = \sum_{m=1}^{M} \frac{|B_m|}{N} |Acc_m - Conf_m|
+    
+    probabilities = torch.softmax(logits, dim=1)
+    confidences, predictions = torch.max(probabilities, dim=1)
+    accuracies = predictions == labels
+
+    bins = torch.linspace(0, 1, n_bins + 1)
+    ece = torch.zeros(1, device=logits.device)
+    
+    for i in range(n_bins):
+        bin_lower = bins[i]
+        bin_upper = bins[i + 1]
+        
+        in_bin = (confidences >= bin_lower.item()) * (confidences <= bin_upper.item())
+        prop_in_bin = in_bin.float().mean()
+        
+        if prop_in_bin.item() > 0:
+            accuracy_in_bin = accuracies[in_bin].float().mean()
+            avg_confidence_in_bin = confidences[in_bin].mean()
+            
+            ece += torch.abs(avg_confidence_in_bin - accuracy_in_bin) * prop_in_bin
+            
+    return ece.item()
+
+    
+def test(model, dataset, device, binary_task, mode, pmodel = None, validation = True, cut_off = 0.0):
     with torch.no_grad():
         model.eval()
         f1 = BinaryF1Score() if binary_task else MulticlassF1Score(num_classes=dataset.num_gclass, average="macro")
         test_loss, correct = 0, 0
         labels = []
         preds = []
+        logits = []
+        pred_logits = []
         if validation:
             data_loader = dataset.valid_loader
             n_samples = dataset.n_valid
@@ -65,19 +95,33 @@ def test(model, dataset, device, binary_task, mode, pmodel = None, validation = 
                     batch,
                     decoder = True,
                     device = device
-                    )
+                )
                 test_loss += F.cross_entropy(test_out, temp_labels, reduction="sum")
                 test_out = F.softmax(test_out, dim=1)
+            
+            p_logits, p_labels = test_out.max(dim=1)
+            logits.append(test_out)
             labels.append(temp_labels)
-            preds.append(test_out.argmax(dim=1))
+            preds.append(p_labels)
+            pred_logits.append(p_logits)
             batch, temp_labels, test_out = 0, 0, 0
-        # ipdb.set_trace()
+
+        logits = torch.cat(logits, dim=0)
         labels = torch.cat(labels)
         preds = torch.cat(preds)
-        test_loss /= n_samples
-        test_acc = int((labels == preds).sum()) / n_samples
-        test_f1 = f1(preds.detach().cpu(), labels.detach().cpu())
-    return test_loss, test_acc, test_f1.item()
+        pred_logits = torch.cat(pred_logits)
+
+    matches = labels == preds
+    tau_mask = pred_logits >= cut_off
+    out_results = dict(
+        loss = (test_loss/n_samples).item(),
+        acc = matches.float().mean().detach().cpu().item(),
+        f1 = f1(preds.detach().cpu(), labels.detach().cpu()).item(),
+        ece = ece(logits, labels),
+        pseudo_f1 = f1(preds[tau_mask].detach().cpu(), labels[tau_mask].detach().cpu()).item(),
+        pseudo_acc = matches[tau_mask].float().mean().detach().cpu().item()
+    )
+    return out_results
 
 def copy_files(file_paths, dest_dir):
     if isinstance(file_paths, str):

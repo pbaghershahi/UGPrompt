@@ -40,8 +40,8 @@ def pretrain_model(
     optimizer = Adam(model.parameters(), lr = optimizer_config["lr"], weight_decay = optimizer_config["weight_decay"])
     scheduler = StepLR(optimizer, step_size = optimizer_config["scheduler_step_size"], gamma = optimizer_config["scheduler_gamma"])
     
-    test_loss, test_acc, test_f1 = test(model, s_dataset, device, binary_task = binary_task, mode = "pretrain", validation = False)
-    logger.info(f'GNN Before Pretraining: -- Test Loss: {test_loss:.3f} -- Test ACC: {test_acc:.3f} -- Test F1-score: {test_f1:.3f}')
+    test_resutls = test(model, s_dataset, device, binary_task = binary_task, mode = "pretrain", validation = False)
+    logger.info(f'GNN Before Pretraining: -- Test Loss: {test_resutls["loss"]:.3f} -- Test ACC: {test_resutls["acc"]:.3f} -- Test F1-score: {test_resutls["f1"]:.3f} -- Test ECE: {test_resutls["ece"]:.3f}')
     # ipdb.set_trace()
     n_epochs = training_config["n_epochs"]
     for epoch in range(n_epochs):
@@ -63,17 +63,15 @@ def pretrain_model(
         optimizer.zero_grad()
 
         if epoch % eval_step == 0 and epoch > 0:
-            valid_loss, valid_acc, valid_f1 = test(model, s_dataset, device, binary_task = binary_task, mode = "pretrain", validation = True)
+            valid_results = test(model, s_dataset, device, binary_task = binary_task, mode = "pretrain", validation = True)
             logger.info(
                 f"Epoch: {epoch}/{n_epochs} -- Train Loss: {loss:.3f} -- " +
-                f"Validation Loss: {valid_loss:.3f} -- Validation ACC: {valid_acc:.3f} -- Validation F1: {valid_f1:.3f}"
+                f"Validation Loss: {valid_results['loss']:.3f} -- Validation ACC: {valid_results['acc']:.3f} -- Validation F1: {valid_results['f1']:.3f} -- Validation ECE: {valid_results['ece']:.3f}"
             )
-            if tunning:
-                train.report({"acc": valid_acc, "f1-score": valid_f1})
 
-    test_loss, test_acc, test_f1 = test(model, s_dataset, device, binary_task = binary_task, mode = "pretrain", validation = False)
+    test_results = test(model, s_dataset, device, binary_task = binary_task, mode = "pretrain", validation = False)
     logger.info(
-        f"GNN After Pretraining: -- Train Loss: {loss:.3f} -- Test Loss: {test_loss:.3f} -- Test ACC: {test_acc:.3f} -- Test F1: {test_f1:.3f}"
+        f"GNN After Pretraining: -- Train Loss: {loss:.3f} -- Test Loss: {test_results['loss']:.3f} -- Test ACC: {test_results['acc']:.3f} -- Test F1: {test_results['f1']:.3f} -- Test ECE: {test_results['ece']:.3f}"
     )
     if empty_pretrained_dir:
         empty_directory(model_dir)
@@ -133,24 +131,42 @@ def prompting(
     results = dict()
     # ipdb.set_trace()
     if s_dataset is not None:
-        test_loss, test_acc, test_f1 = test(main_model, s_dataset, device, binary_task = binary_task, mode = "pretrain", validation = False)
-        logger.info(f'Pretrained GNN on Source Dataset -- Test Loss: {test_loss:.3f} -- Test ACC: {test_acc:.3f} -- Test F1-score: {test_f1:.3f}')
-        results["source_test_acc"] = test_acc
-        results["source_test_f1"] = test_f1
-    valid_loss, valid_acc, valid_f1 = test(main_model, t_dataset, device, binary_task = binary_task, mode = "pretrain", validation = True)
-    results["target_valid_acc"] = valid_acc
-    results["target_valid_f1"] = valid_f1
-    test_loss, test_acc, test_f1 = test(main_model, t_dataset, device, binary_task = binary_task, mode = "pretrain", validation = False)
-    logger.info(f"Pretrained GNN on Target Dataset Without Prompting: -- " +\
-                f"Validation Loss: {valid_loss:.3f} -- Validation ACC: {valid_acc:.3f} -- Validation F1-score: {valid_f1:.3f} -- " +\
-                f"Test Loss: {test_loss:.3f} -- Test ACC: {test_acc:.3f} -- Test F1-score: {test_f1:.3f}"
-            )
-    results["target_test_acc"] = test_acc
-    results["target_test_f1"] = test_f1
-    results["prompt_test_acc"] = []
-    results["prompt_valid_acc"] = []
-    results["prompt_test_f1"] = []
-    results["prompt_valid_f1"] = []
+        test_results = test(main_model, s_dataset, device, binary_task = binary_task, mode = "pretrain", validation = False)
+        logger.info(f'Pretrained GNN on Source Dataset -- Test Loss: {test_results["loss"]:.3f} -- Test ACC: {test_results["acc"]:.3f} -- Test F1-score: {test_results["f1"]:.3f} -- Test ECE: {test_results["ece"]:.3f}')
+        results |= dict(
+            source_test_acc = test_results["acc"],
+            source_test_f1 = test_results["f1"],
+            source_test_ece = test_results["ece"],
+        )
+        
+    valid_results = test(main_model, t_dataset, device, binary_task = binary_task, mode = "pretrain", validation = True)
+    results |= dict(
+        target_valid_acc = valid_results["acc"],
+        target_valid_f1 = valid_results["f1"],
+        target_valid_ece = valid_results["ece"],
+    )
+    
+    test_results = test(main_model, t_dataset, device, binary_task = binary_task, mode = "pretrain", validation = False, cut_off = training_config["cut_off"])
+    logger.info(
+        f"Pretrained GNN on Target Dataset Without Prompting: -- " +\
+        f"Validation Loss: {valid_results['loss']:.3f} -- Validation ACC: {valid_results['acc']:.3f} -- Validation F1-score: {valid_results['f1']:.3f} -- Validation ECE: {valid_results['ece']:.3f}" +\
+        f"Test Loss: {test_results['loss']:.3f} -- Test ACC: {test_results['acc']:.3f} -- Test F1-score: {test_results['f1']:.3f} -- Test ECE: {test_results['ece']:.3f} -- Test Pseudo-ACC: {test_results['pseudo_acc']:.3f} -- Test Pseudo-F1: {test_results['pseudo_f1']:.3f}"
+    )
+
+    results |= dict(
+        target_test_acc = test_results["acc"],
+        target_test_f1 = test_results["f1"],
+        target_test_ece = test_results["ece"],
+        target_test_pseudo_acc = test_results["pseudo_acc"],
+        target_test_pseudo_f1 = test_results["pseudo_f1"],
+        prompt_test_acc = [],
+        prompt_test_ece = [],
+        prompt_test_f1 = [],
+        prompt_valid_acc = [],
+        prompt_valid_ece = [],
+        prompt_valid_f1 = [],
+    )
+    
     for k in range(num_runs):
 
         if prompt_method == "all_in_one":
@@ -198,6 +214,7 @@ def prompting(
     
         valid_average_acc = []
         valid_average_f1 = []
+        valid_average_ece = []
         n_epochs = training_config["n_epochs"]
         for epoch in range(n_epochs):
             pmodel.train()
@@ -213,30 +230,40 @@ def prompting(
             if epoch % eval_step == 0 or epoch >= n_epochs - 6:
                 pmodel.eval()
                 main_model.eval()
-                valid_loss, valid_acc, valid_f1 = test(main_model, t_dataset, device, binary_task = binary_task, mode = test_mode, pmodel = pmodel, validation = True)
-                logger.info(f"Epoch: {epoch}/{n_epochs} -- Train Loss: {loss:.3f} -- Validation Loss: {valid_loss:.3f} -- Validation ACC: {valid_acc:.3f} -- Validation F1: {valid_f1:.3f}")
+                valid_results = test(main_model, t_dataset, device, binary_task = binary_task, mode = test_mode, pmodel = pmodel, validation = True, cut_off = training_config["cut_off"])
+                logger.info(f"Epoch: {epoch}/{n_epochs} -- Train Loss: {loss:.3f} -- Validation Loss: {valid_results['loss']:.3f} -- Validation ACC: {valid_results['acc']:.3f} -- Validation F1: {valid_results['f1']:.3f} -- Validation ECE: {valid_results['ece']:.3f}")
                 if epoch >= n_epochs - 6:
-                    valid_average_acc.append(valid_acc)
-                    valid_average_f1.append(valid_f1)
+                    valid_average_acc.append(valid_results["acc"])
+                    valid_average_f1.append(valid_results["f1"])
+                    valid_average_ece.append(valid_results["ece"])
 
         n_evali_valid = len(valid_average_f1)
         valid_average_acc = np.array(valid_average_acc).mean()
         valid_average_f1 = np.array(valid_average_f1).mean()
+        valid_average_ece = np.array(valid_average_ece).mean()
         logger.info(f"Run {k}/{num_runs}: Average Over Last {n_evali_valid} epochs -- Valid ACC: {valid_average_acc} -- Valid F1-score: {valid_average_f1}")
         results["prompt_valid_acc"].append(valid_average_acc)
         results["prompt_valid_f1"].append(valid_average_f1)
+        results["prompt_valid_ece"].append(valid_average_f1)
 
-        test_loss, test_acc, test_f1 = test(main_model, t_dataset, device, binary_task = binary_task, mode = test_mode, pmodel = pmodel, validation = False)
-        logger.info(f"Test Results of Run {k}/{num_runs}: -- Test Loss: {test_loss:.3f} -- Test ACC: {test_acc:.3f} -- Test F1: {test_f1:.3f}")
-        results["prompt_test_acc"].append(test_acc)
-        results["prompt_test_f1"].append(test_f1)
+        test_results = test(main_model, t_dataset, device, binary_task = binary_task, mode = test_mode, pmodel = pmodel, validation = False, cut_off = training_config["cut_off"])
+        logger.info(f"Test Results of Run {k}/{num_runs}: -- Test Loss: {test_results['loss']:.3f} -- Test ACC: {test_results['acc']:.3f} -- Test F1: {test_results['f1']:.3f} -- Test ECE: {test_results['ece']:.3f}")
+        results["prompt_test_acc"].append(test_results["acc"])
+        results["prompt_test_f1"].append(test_results["f1"])
+        results["prompt_test_ece"].append(test_results["ece"])
 
         t_dataset.reset_preds()
-        
-    results["prompt_valid_acc"] = np.array(results["prompt_valid_acc"]).mean()
-    results["prompt_valid_f1"] = np.array(results["prompt_valid_f1"]).mean()
-    results["prompt_test_acc"] = np.array(results["prompt_test_acc"]).mean()
-    results["prompt_test_f1"] = np.array(results["prompt_test_f1"]).mean()
-    logger.info(f"Validation average after {num_runs} runs -- ACC: {results['prompt_valid_acc']:.3f} -- F1-score: {results['prompt_valid_f1']:.3f}")
-    logger.info(f"Test average after {num_runs} runs -- ACC: {results['prompt_test_acc']:.3f} -- F1-score: {results['prompt_test_f1']:.3f}")
+
+    results.update(
+        dict(
+            prompt_valid_acc = np.array(results["prompt_valid_acc"]).mean(),
+            prompt_valid_f1 = np.array(results["prompt_valid_f1"]).mean(),
+            prompt_valid_ece = np.array(results["prompt_valid_ece"]).mean(),
+            prompt_test_acc = np.array(results["prompt_test_acc"]).mean(),
+            prompt_test_f1 = np.array(results["prompt_test_f1"]).mean(),
+            prompt_test_ece = np.array(results["prompt_test_ece"]).mean(),
+        )
+    )
+    logger.info(f"Validation average after {num_runs} runs -- ACC: {results['prompt_valid_acc']:.3f} -- F1-score: {results['prompt_valid_f1']:.3f} -- ECE: {results['prompt_valid_ece']:.3f}")
+    logger.info(f"Test average after {num_runs} runs -- ACC: {results['prompt_test_acc']:.3f} -- F1-score: {results['prompt_test_f1']:.3f} -- ECE: {results['prompt_test_ece']:.3f}")
     return pmodel, results
