@@ -506,7 +506,7 @@ class GraphPrompt(nn.Module):
             temp_centers, temp_counts = GraphPrompt.cal_temp_centers(embeds, batch.y, dataset.num_gclass)
             accumulated_centers += temp_centers * temp_counts.view(-1, 1)
             accumulated_counts += temp_counts.view(-1, 1)
-        self._centers = accumulated_centers / accumulated_counts
+        self._centers = accumulated_centers / (accumulated_counts + 1e-8)
 
     def get_centers(self,):
         return self._centers
@@ -551,7 +551,7 @@ class GraphPromptPlus(GraphPrompt):
             temp_centers, temp_counts = GraphPrompt.cal_temp_centers(embeds, batch.y, dataset.num_gclass)
             accumulated_centers += temp_centers * temp_counts.view(-1, 1)
             accumulated_counts += temp_counts.view(-1, 1)
-        self._centers = accumulated_centers / accumulated_counts
+        self._centers = accumulated_centers / (accumulated_counts + 1e-8)
         
     def forward(self, node_embeds, batch_idxs, device = None):
         # ipdb.set_trace()
