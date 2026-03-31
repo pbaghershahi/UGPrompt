@@ -9,7 +9,6 @@ from torch_geometric.loader import DataLoader
 from torcheval.metrics.functional import multiclass_f1_score
 from torchmetrics.classification import BinaryF1Score, MulticlassF1Score
 from sklearn.preprocessing import StandardScaler
-import ipdb
 
 
 
@@ -114,18 +113,15 @@ def test(model, dataset, device, binary_task, mode, pmodel = None, validation = 
 
     matches = labels == preds
     tau_mask = pred_logits >= cut_off
-    # ipdb.set_trace()
-    try:
-        out_results = dict(
-            loss = (test_loss/n_samples).item(),
-            acc = matches.float().mean().detach().cpu().item(),
-            f1 = f1(preds.detach().cpu(), labels.detach().cpu()).item(),
-            ece = ece(logits, labels),
-            pseudo_f1 = f1(preds[tau_mask].detach().cpu(), labels[tau_mask].detach().cpu()).item() if preds[tau_mask].any() else 0.0,
-            pseudo_acc = matches[tau_mask].float().mean().detach().cpu().item() if preds[tau_mask].any() else 0.0
-        )
-    except:
-        ipdb.set_trace()
+
+    out_results = dict(
+        loss = (test_loss/n_samples).item(),
+        acc = matches.float().mean().detach().cpu().item(),
+        f1 = f1(preds.detach().cpu(), labels.detach().cpu()).item(),
+        ece = ece(logits, labels),
+        pseudo_f1 = f1(preds[tau_mask].detach().cpu(), labels[tau_mask].detach().cpu()).item() if tau_mask.any() else 0.0,
+        pseudo_acc = matches[tau_mask].float().mean().detach().cpu().item() if tau_mask.any() else 0.0
+    )
     return out_results
 
 def copy_files(file_paths, dest_dir):
